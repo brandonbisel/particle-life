@@ -18,6 +18,10 @@ struct SimParams {
     mouse_y:        f32,
     mouse_strength: f32,
     mouse_range:    f32,
+    border_mode:    u32,  // 0=Wrap, 1=Repel, 2=Static
+    _pad1:          u32,
+    _pad2:          u32,
+    _pad3:          u32,
 }
 
 struct SortedEntry {
@@ -34,7 +38,7 @@ struct SortedEntry {
 
 fn torus_delta(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     var d = b - a;
-    d = d - round(d);   // wraps each component to [-0.5, 0.5]
+    d = d - round(d);
     return d;
 }
 
@@ -43,18 +47,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let k = gid.x;
     if k >= params.n_particles { return; }
 
-    // Dispatch over cell-sorted order so all 64 threads in a wavefront share the same
-    // 5×5 neighborhood, turning inner-loop sorted_entries reads from cache misses into
-    // cache hits. Position and species come from the sequential sorted_entries[k] read;
-    // velocity requires one random read from the original particles buffer.
     let subj = sorted_entries[k];
-    let i    = subj.index;   // original index for velocity read and write-back
+    let i    = subj.index;
 
     var force_acc = vec2<f32>(0.0, 0.0);
 
-    // Hoist uniform-derived constants out of the inner loop.
-    // particle_force() uses two divisions (dist/r_min, abs(...)/range); precomputing
-    // their reciprocals replaces them with multiplications for every in-range pair.
     let r_min       = params.r_min;
     let r_max       = params.r_max;
     let aspect      = params.aspect;
@@ -62,6 +59,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r_sum       = r_max + r_min;
     let inv_r_range = 1.0 / (r_max - r_min);
     let r_max_sq    = r_max * r_max;
+    let wrapping    = params.border_mode == 0u;
 
     let grid_w = max(5u, u32(2.0 / r_max));
     let igw    = i32(grid_w);
@@ -70,7 +68,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     for (var dy = -2; dy <= 2; dy++) {
         for (var dx = -2; dx <= 2; dx++) {
-            // Torus-wrap the neighbor cell coordinates.
             let nx   = ((gx_i + dx) % igw + igw) % igw;
             let ny   = ((gy_i + dy) % igw + igw) % igw;
             let cell = u32(ny * igw + nx);
@@ -82,16 +79,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 let entry = sorted_entries[j];
                 if entry.index == i { continue; }
 
-                let delta   = torus_delta(subj.position, entry.position);
+                // Use torus shortcut only in wrap mode; in repel/static modes use
+                // direct delta so cross-boundary attraction correctly vanishes.
+                let delta   = select(entry.position - subj.position,
+                                     torus_delta(subj.position, entry.position),
+                                     wrapping);
                 let dx_asp  = delta.x * aspect;
                 let dist_sq = dx_asp * dx_asp + delta.y * delta.y;
 
-                // Skip sqrt for the ~50% of candidates outside r_max.
                 if dist_sq > 1e-8 && dist_sq < r_max_sq {
                     let dist = sqrt(dist_sq);
                     let a    = attraction[subj.species * 8u + entry.species];
 
-                    // Inlined particle_force with precomputed reciprocals.
                     let repulsion   = dist * inv_r_min - 1.0;
                     let interaction = a * (1.0 - abs(2.0 * dist - r_sum) * inv_r_range);
                     let mask_rep    = 1.0 - step(r_min, dist);
@@ -107,9 +106,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var vel = particles[i].velocity + force_acc * (params.force_scale * params.dt);
     vel    *= exp(-params.friction * params.dt);
 
-    // Mouse attractor / repulsor — strength bypasses force_scale; sign: + = attract, - = repel.
+    // Mouse attractor / repulsor.
     if params.mouse_strength != 0.0 && params.mouse_range > 0.0 {
-        let m_delta = torus_delta(subj.position, vec2<f32>(params.mouse_x, params.mouse_y));
+        let m_pos   = vec2<f32>(params.mouse_x, params.mouse_y);
+        let m_delta = select(m_pos - subj.position,
+                             torus_delta(subj.position, m_pos),
+                             wrapping);
         let m_dx    = m_delta.x * aspect;
         let m_dsq   = m_dx * m_dx + m_delta.y * m_delta.y;
         let m_rsq   = params.mouse_range * params.mouse_range;
@@ -120,13 +122,48 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
 
-    // CFL guard: cap speed so a particle travels at most 0.25 * r_max per step.
+    // Border repel force (mode 1): spring pushes particles away from each wall within r_max.
+    if params.border_mode == 1u {
+        let brange     = r_max;
+        let peak_speed = brange / params.dt * 0.5;
+        if subj.position.x < brange {
+            let t = 1.0 - subj.position.x / brange;
+            vel.x += t * t * peak_speed * params.dt;
+        }
+        if subj.position.x > 1.0 - brange {
+            let t = 1.0 - (1.0 - subj.position.x) / brange;
+            vel.x -= t * t * peak_speed * params.dt;
+        }
+        if subj.position.y < brange {
+            let t = 1.0 - subj.position.y / brange;
+            vel.y += t * t * peak_speed * params.dt;
+        }
+        if subj.position.y > 1.0 - brange {
+            let t = 1.0 - (1.0 - subj.position.y) / brange;
+            vel.y -= t * t * peak_speed * params.dt;
+        }
+    }
+
+    // CFL guard.
     let max_speed = params.r_max / params.dt * 0.25;
     let spd = length(vel);
     vel *= min(1.0, max_speed / max(spd, 1e-6));
 
     var pos = subj.position + vel * params.dt;
-    pos     = fract(pos + vec2<f32>(1.0, 1.0));
+
+    if params.border_mode == 0u {
+        // Wrap: torus topology.
+        pos = fract(pos + vec2<f32>(1.0, 1.0));
+    } else if params.border_mode == 1u {
+        // Repel: spring force already applied; just clamp against tunneling.
+        pos = clamp(pos, vec2<f32>(0.0), vec2<f32>(1.0));
+    } else {
+        // Static: hard wall — clamp and zero the outward velocity component.
+        if pos.x < 0.0 { vel.x = max(vel.x, 0.0); pos.x = 0.0; }
+        if pos.x > 1.0 { vel.x = min(vel.x, 0.0); pos.x = 1.0; }
+        if pos.y < 0.0 { vel.y = max(vel.y, 0.0); pos.y = 0.0; }
+        if pos.y > 1.0 { vel.y = min(vel.y, 0.0); pos.y = 1.0; }
+    }
 
     particles[i].velocity = vel;
     particles[i].position = pos;

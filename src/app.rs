@@ -79,6 +79,9 @@ struct AppState {
     tool_range: f32,
     mouse_strength: f32,
 
+    // Spawn tool state
+    spawn_species: Option<usize>, // None = random species per particle
+
     // Mouse tracking
     cursor_px: PhysicalPosition<f64>,
     lmb_down: bool,
@@ -135,6 +138,7 @@ impl ApplicationHandler for AppHandler {
             tool: ui::Tool::Pan,
             tool_range: 0.1,
             mouse_strength: 2.0,
+            spawn_species: None,
             cursor_px: PhysicalPosition::new(0.0, 0.0),
             lmb_down: false,
             lmb_panning: false,
@@ -197,6 +201,9 @@ impl ApplicationHandler for AppHandler {
                             + (position.y - state.pan_start_px.y) as f32
                                 / (vp.height as f32 * state.camera.zoom),
                     ];
+                    // Clamp so the world border never passes screen center.
+                    state.camera.center[0] = state.camera.center[0].clamp(0.0, 1.0);
+                    state.camera.center[1] = state.camera.center[1].clamp(0.0, 1.0);
                 }
             }
 
@@ -276,10 +283,18 @@ impl ApplicationHandler for AppHandler {
                 if !resp.consumed {
                     let step = 0.1 / state.camera.zoom;
                     match logical_key {
-                        Key::Named(NamedKey::ArrowLeft)  => state.camera.center[0] -= step,
-                        Key::Named(NamedKey::ArrowRight) => state.camera.center[0] += step,
-                        Key::Named(NamedKey::ArrowUp)    => state.camera.center[1] += step,
-                        Key::Named(NamedKey::ArrowDown)  => state.camera.center[1] -= step,
+                        Key::Named(NamedKey::ArrowLeft) => {
+                            state.camera.center[0] = (state.camera.center[0] - step).max(0.0);
+                        }
+                        Key::Named(NamedKey::ArrowRight) => {
+                            state.camera.center[0] = (state.camera.center[0] + step).min(1.0);
+                        }
+                        Key::Named(NamedKey::ArrowUp) => {
+                            state.camera.center[1] = (state.camera.center[1] + step).min(1.0);
+                        }
+                        Key::Named(NamedKey::ArrowDown) => {
+                            state.camera.center[1] = (state.camera.center[1] - step).max(0.0);
+                        }
                         Key::Character(ref c) => {
                             let vp = window.inner_size();
                             let mid = PhysicalPosition::new(
@@ -318,21 +333,29 @@ impl ApplicationHandler for AppHandler {
 
                 // Explicitly split field borrows so the closure can see sim + frame_times
                 // while egui_ctx is also borrowed.
+                let cam_center = state.camera.center;
+                let cam_zoom   = state.camera.zoom;
+
                 let (full_output, should_respawn, should_randomize) = {
-                    let egui_ctx = &state.egui_ctx;
-                    let sim = &mut state.sim;
-                    let frame_times = &state.frame_times;
-                    let tool = &mut state.tool;
-                    let tool_range = &mut state.tool_range;
+                    let egui_ctx       = &state.egui_ctx;
+                    let sim            = &mut state.sim;
+                    let frame_times    = &state.frame_times;
+                    let tool           = &mut state.tool;
+                    let tool_range     = &mut state.tool_range;
                     let mouse_strength = &mut state.mouse_strength;
-                    let mut respawn = false;
-                    let mut randomize = false;
+                    let spawn_species  = &mut state.spawn_species;
+                    let n_species      = sim.species_count;
+                    let border_mode    = sim.border_mode;
+                    let mut respawn    = false;
+                    let mut randomize  = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
                         let (r, m) = ui::draw_ui(ctx, sim);
                         respawn = r;
                         randomize = m;
                         ui::draw_perf_overlay(ctx, frame_times, sim);
-                        ui::draw_toolbar(ctx, tool, tool_range, mouse_strength);
+                        ui::draw_toolbar(ctx, tool, tool_range, mouse_strength, spawn_species, n_species);
+                        ui::draw_world_border(ctx, cam_center, cam_zoom, border_mode);
+                        ui::draw_cursor_indicator(ctx, *tool, *tool_range, cam_zoom);
                     });
                     (out, respawn, randomize)
                 };
@@ -356,8 +379,9 @@ impl ApplicationHandler for AppHandler {
                     _ => 0.0,
                 };
                 if matches!(state.tool, ui::Tool::Spawn) && state.lmb_down {
-                    let queue = state.renderer.queue();
-                    state.sim.spawn_particles(queue, world, state.tool_range);
+                    let queue          = state.renderer.queue();
+                    let spawn_species  = state.spawn_species;
+                    state.sim.spawn_particles(queue, world, state.tool_range, spawn_species);
                 }
 
                 let egui::FullOutput {

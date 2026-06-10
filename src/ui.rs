@@ -17,6 +17,8 @@ pub fn draw_toolbar(
     tool: &mut Tool,
     tool_range: &mut f32,
     mouse_strength: &mut f32,
+    spawn_species: &mut Option<usize>,
+    n_species: usize,
 ) {
     egui::Window::new("Tools")
         .default_pos([10.0, 560.0])
@@ -50,6 +52,34 @@ pub fn draw_toolbar(
                             .text("Radius")
                             .step_by(0.005),
                     );
+                    // Species color palette
+                    ui.horizontal_wrapped(|ui| {
+                        // "Any" button
+                        let any_sel = spawn_species.is_none();
+                        if ui.selectable_label(any_sel, "Any").clicked() {
+                            *spawn_species = None;
+                        }
+                        // One swatch per active species
+                        for i in 0..n_species {
+                            let color = species_color(i);
+                            let is_sel = *spawn_species == Some(i);
+                            let swatch_size = egui::Vec2::splat(22.0);
+                            let (rect, resp) =
+                                ui.allocate_exact_size(swatch_size, egui::Sense::click());
+                            ui.painter().rect_filled(rect, 3.0, color);
+                            if is_sel {
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    egui::CornerRadius::same(3),
+                                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                                    egui::StrokeKind::Outside,
+                                );
+                            }
+                            if resp.clicked() {
+                                *spawn_species = Some(i);
+                            }
+                        }
+                    });
                 }
                 _ => {}
             }
@@ -134,6 +164,13 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> (bool, bool) {
                 sim.reset_params();
             }
 
+            ui.horizontal(|ui| {
+                ui.label("Border:");
+                ui.radio_value(&mut sim.border_mode, 0u32, "Wrap");
+                ui.radio_value(&mut sim.border_mode, 1u32, "Repel");
+                ui.radio_value(&mut sim.border_mode, 2u32, "Static");
+            });
+
             ui.separator();
 
             egui::CollapsingHeader::new("Attraction Matrix")
@@ -183,6 +220,70 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> (bool, bool) {
         });
 
     (respawn, randomize)
+}
+
+/// Convert a simulation world coordinate to an egui screen position.
+fn world_to_screen(world: [f32; 2], center: [f32; 2], zoom: f32, rect: egui::Rect) -> egui::Pos2 {
+    let sx = ((world[0] - center[0]) * zoom + 0.5) * rect.width()  + rect.left();
+    let sy = (0.5 - (world[1] - center[1]) * zoom) * rect.height() + rect.top();
+    egui::pos2(sx, sy)
+}
+
+/// Draw a border rectangle around the simulation world [0,1]².
+/// Color reflects the active border mode: blue=wrap, amber=repel, red=static.
+pub fn draw_world_border(
+    ctx: &egui::Context,
+    camera_center: [f32; 2],
+    camera_zoom: f32,
+    border_mode: u32,
+) {
+    let color = match border_mode {
+        1 => egui::Color32::from_rgba_unmultiplied(255, 190,  80, 90), // amber — repel
+        2 => egui::Color32::from_rgba_unmultiplied(255,  90,  90, 90), // red   — static
+        _ => egui::Color32::from_rgba_unmultiplied(180, 210, 255, 70), // blue  — wrap
+    };
+
+    let rect = ctx.screen_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("world_border"),
+    ));
+
+    let tl = world_to_screen([0.0, 1.0], camera_center, camera_zoom, rect);
+    let br = world_to_screen([1.0, 0.0], camera_center, camera_zoom, rect);
+    painter.rect_stroke(
+        egui::Rect::from_min_max(tl, br),
+        egui::CornerRadius::ZERO,
+        egui::Stroke::new(1.5, color),
+        egui::StrokeKind::Middle,
+    );
+}
+
+/// Draw a circle around the cursor showing the active tool's range.
+/// Only shown for tools that use a range (Attract, Repel, Spawn).
+pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, camera_zoom: f32) {
+    if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
+        return;
+    }
+    let Some(cursor) = ctx.input(|i| i.pointer.hover_pos()) else { return };
+
+    // Screen radius: tool_range world-units × pixels-per-world-unit.
+    // Because the shader corrects x by aspect ratio, equal world-distances map to
+    // equal screen distances in Y — so the influence region is a perfect screen circle.
+    let screen_radius = tool_range * camera_zoom * ctx.screen_rect().height();
+
+    let color = match tool {
+        Tool::Attract => egui::Color32::from_rgba_unmultiplied(100, 200, 255, 180),
+        Tool::Repel   => egui::Color32::from_rgba_unmultiplied(255, 100, 100, 180),
+        Tool::Spawn   => egui::Color32::from_rgba_unmultiplied(100, 255, 130, 180),
+        _ => unreachable!(),
+    };
+
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Tooltip,
+        egui::Id::new("cursor_indicator"),
+    ));
+    painter.circle_stroke(cursor, screen_radius, egui::Stroke::new(1.5, color));
 }
 
 pub fn draw_perf_overlay(ctx: &egui::Context, frame_times: &VecDeque<f32>, sim: &SimulationState) {
