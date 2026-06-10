@@ -81,6 +81,7 @@ struct AppState {
 
     // Spawn tool state
     spawn_species: Option<usize>, // None = random species per particle
+    spawn_rate:    u32,           // particles spawned per frame while LMB held
 
     // Mouse tracking
     cursor_px: PhysicalPosition<f64>,
@@ -139,6 +140,7 @@ impl ApplicationHandler for AppHandler {
             tool_range: 0.1,
             mouse_strength: 2.0,
             spawn_species: None,
+            spawn_rate: 50,
             cursor_px: PhysicalPosition::new(0.0, 0.0),
             lmb_down: false,
             lmb_panning: false,
@@ -336,7 +338,7 @@ impl ApplicationHandler for AppHandler {
                 let cam_center = state.camera.center;
                 let cam_zoom   = state.camera.zoom;
 
-                let (full_output, should_respawn, should_randomize) = {
+                let (full_output, should_respawn, should_randomize, should_reset_view) = {
                     let egui_ctx       = &state.egui_ctx;
                     let sim            = &mut state.sim;
                     let frame_times    = &state.frame_times;
@@ -344,20 +346,25 @@ impl ApplicationHandler for AppHandler {
                     let tool_range     = &mut state.tool_range;
                     let mouse_strength = &mut state.mouse_strength;
                     let spawn_species  = &mut state.spawn_species;
+                    let spawn_rate     = &mut state.spawn_rate;
                     let n_species      = sim.species_count;
                     let border_mode    = sim.border_mode;
                     let mut respawn    = false;
                     let mut randomize  = false;
+                    let mut reset_view = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
                         let (r, m) = ui::draw_ui(ctx, sim);
                         respawn = r;
                         randomize = m;
                         ui::draw_perf_overlay(ctx, frame_times, sim);
-                        ui::draw_toolbar(ctx, tool, tool_range, mouse_strength, spawn_species, n_species);
+                        reset_view = ui::draw_toolbar(
+                            ctx, tool, tool_range, mouse_strength,
+                            spawn_species, spawn_rate, n_species,
+                        );
                         ui::draw_world_border(ctx, cam_center, cam_zoom, border_mode);
                         ui::draw_cursor_indicator(ctx, *tool, *tool_range, cam_zoom);
                     });
-                    (out, respawn, randomize)
+                    (out, respawn, randomize, reset_view)
                 };
 
                 if should_respawn {
@@ -365,6 +372,9 @@ impl ApplicationHandler for AppHandler {
                 }
                 if should_randomize {
                     state.sim.randomize_attraction();
+                }
+                if should_reset_view {
+                    state.camera = Camera::default_view();
                 }
 
                 // Apply active tool effects to sim mouse state before dispatch.
@@ -379,9 +389,12 @@ impl ApplicationHandler for AppHandler {
                     _ => 0.0,
                 };
                 if matches!(state.tool, ui::Tool::Spawn) && state.lmb_down {
-                    let queue          = state.renderer.queue();
-                    let spawn_species  = state.spawn_species;
-                    state.sim.spawn_particles(queue, world, state.tool_range, spawn_species);
+                    let queue         = state.renderer.queue();
+                    let spawn_species = state.spawn_species;
+                    let spawn_rate    = state.spawn_rate;
+                    let vp            = window.inner_size();
+                    let aspect        = vp.width as f32 / vp.height as f32;
+                    state.sim.spawn_particles(queue, world, state.tool_range, spawn_species, aspect, spawn_rate);
                 }
 
                 let egui::FullOutput {

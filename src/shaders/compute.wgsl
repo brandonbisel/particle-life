@@ -18,10 +18,10 @@ struct SimParams {
     mouse_y:        f32,
     mouse_strength: f32,
     mouse_range:    f32,
-    border_mode:    u32,  // 0=Wrap, 1=Repel, 2=Static
-    _pad1:          u32,
-    _pad2:          u32,
-    _pad3:          u32,
+    border_mode:             u32,
+    border_repel_strength:   f32,
+    _pad2:                   u32,
+    _pad3:                   u32,
 }
 
 struct SortedEntry {
@@ -125,7 +125,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Border repel force (mode 1): spring pushes particles away from each wall within r_max.
     if params.border_mode == 1u {
         let brange     = r_max;
-        let peak_speed = brange / params.dt * 0.5;
+        let peak_speed = brange / params.dt * params.border_repel_strength;
         if subj.position.x < brange {
             let t = 1.0 - subj.position.x / brange;
             vel.x += t * t * peak_speed * params.dt;

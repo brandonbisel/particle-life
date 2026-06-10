@@ -12,16 +12,20 @@ pub enum Tool {
     Spawn,
 }
 
+/// Returns `true` if the "Reset View" button was clicked.
 pub fn draw_toolbar(
     ctx: &egui::Context,
     tool: &mut Tool,
     tool_range: &mut f32,
     mouse_strength: &mut f32,
     spawn_species: &mut Option<usize>,
+    spawn_rate: &mut u32,
     n_species: usize,
-) {
+) -> bool {
+    let mut reset_view = false;
+
     egui::Window::new("Tools")
-        .default_pos([10.0, 560.0])
+        .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
         .resizable(false)
         .collapsible(false)
         .show(ctx, |ui| {
@@ -32,6 +36,10 @@ pub fn draw_toolbar(
                 ui.selectable_value(tool, Tool::Attract, "Attract");
                 ui.selectable_value(tool, Tool::Repel,   "Repel");
                 ui.selectable_value(tool, Tool::Spawn,   "Spawn");
+                ui.separator();
+                if ui.button("Reset View").clicked() {
+                    reset_view = true;
+                }
             });
             match *tool {
                 Tool::Attract | Tool::Repel => {
@@ -52,20 +60,22 @@ pub fn draw_toolbar(
                             .text("Radius")
                             .step_by(0.005),
                     );
+                    ui.add(
+                        egui::Slider::new(spawn_rate, 1..=500)
+                            .text("Rate (per frame)")
+                            .logarithmic(true),
+                    );
                     // Species color palette
                     ui.horizontal_wrapped(|ui| {
-                        // "Any" button
                         let any_sel = spawn_species.is_none();
                         if ui.selectable_label(any_sel, "Any").clicked() {
                             *spawn_species = None;
                         }
-                        // One swatch per active species
                         for i in 0..n_species {
                             let color = species_color(i);
                             let is_sel = *spawn_species == Some(i);
-                            let swatch_size = egui::Vec2::splat(22.0);
                             let (rect, resp) =
-                                ui.allocate_exact_size(swatch_size, egui::Sense::click());
+                                ui.allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::click());
                             ui.painter().rect_filled(rect, 3.0, color);
                             if is_sel {
                                 ui.painter().rect_stroke(
@@ -84,6 +94,8 @@ pub fn draw_toolbar(
                 _ => {}
             }
         });
+
+    reset_view
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
@@ -170,6 +182,13 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> (bool, bool) {
                 ui.radio_value(&mut sim.border_mode, 1u32, "Repel");
                 ui.radio_value(&mut sim.border_mode, 2u32, "Static");
             });
+            if sim.border_mode == 1 {
+                ui.add(
+                    egui::Slider::new(&mut sim.border_repel_strength, 0.05..=2.0)
+                        .text("Repel Force")
+                        .step_by(0.05),
+                );
+            }
 
             ui.separator();
 
@@ -260,22 +279,20 @@ pub fn draw_world_border(
 }
 
 /// Draw a circle around the cursor showing the active tool's range.
-/// Only shown for tools that use a range (Attract, Repel, Spawn).
+/// For Attract/Repel, also draws a radial gradient fill that approximates the
+/// quadratic force falloff. Only shown for tools that use a range.
 pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, camera_zoom: f32) {
     if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
         return;
     }
     let Some(cursor) = ctx.input(|i| i.pointer.hover_pos()) else { return };
 
-    // Screen radius: tool_range world-units × pixels-per-world-unit.
-    // Because the shader corrects x by aspect ratio, equal world-distances map to
-    // equal screen distances in Y — so the influence region is a perfect screen circle.
     let screen_radius = tool_range * camera_zoom * ctx.screen_rect().height();
 
-    let color = match tool {
-        Tool::Attract => egui::Color32::from_rgba_unmultiplied(100, 200, 255, 180),
-        Tool::Repel   => egui::Color32::from_rgba_unmultiplied(255, 100, 100, 180),
-        Tool::Spawn   => egui::Color32::from_rgba_unmultiplied(100, 255, 130, 180),
+    let (r, g, b) = match tool {
+        Tool::Attract => (100u8, 200u8, 255u8),
+        Tool::Repel   => (255u8, 100u8, 100u8),
+        Tool::Spawn   => (100u8, 255u8, 130u8),
         _ => unreachable!(),
     };
 
@@ -283,7 +300,23 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, c
         egui::Order::Tooltip,
         egui::Id::new("cursor_indicator"),
     ));
-    painter.circle_stroke(cursor, screen_radius, egui::Stroke::new(1.5, color));
+
+    // Radial gradient fill for Attract/Repel — approximates the quadratic falloff
+    // by stacking concentric filled circles from the outside inward. Each circle
+    // adds a small alpha; the center accumulates all layers, the edge only the outermost.
+    if matches!(tool, Tool::Attract | Tool::Repel) {
+        const RINGS: usize = 24;
+        for ring in 0..RINGS {
+            let frac = ring as f32 / RINGS as f32; // 0 = outermost, ~1 = innermost
+            let r_px = screen_radius * (1.0 - frac);
+            let fill = egui::Color32::from_rgba_unmultiplied(r, g, b, 5);
+            painter.circle_filled(cursor, r_px, fill);
+        }
+    }
+
+    // Outer ring (border of the influence zone)
+    let border = egui::Color32::from_rgba_unmultiplied(r, g, b, 180);
+    painter.circle_stroke(cursor, screen_radius, egui::Stroke::new(1.5, border));
 }
 
 pub fn draw_perf_overlay(ctx: &egui::Context, frame_times: &VecDeque<f32>, sim: &SimulationState) {

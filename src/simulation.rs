@@ -31,8 +31,9 @@ struct SimParams {
     mouse_strength: f32,
     mouse_range:    f32,
     // 0 = Wrap (torus), 1 = Repel (spring wall), 2 = Static (hard wall)
-    border_mode:    u32,
-    _pad:           [u32; 3], // pad to 64 bytes (4 × 16)
+    border_mode:           u32,
+    border_repel_strength: f32, // multiplier on repel wall force; default 0.3
+    _pad:                  [u32; 2], // pad to 64 bytes (4 × 16)
 }
 
 pub struct SimulationState {
@@ -44,8 +45,9 @@ pub struct SimulationState {
     pub force_scale:     f32,
     pub particle_radius: f32,
     pub attraction:     [f32; 64], // row-major 8×8; A[i,j] = attraction[i*8+j]
-    pub paused:         bool,
-    pub border_mode:    u32, // 0 = Wrap, 1 = Repel, 2 = Static
+    pub paused:                bool,
+    pub border_mode:           u32, // 0 = Wrap, 1 = Repel, 2 = Static
+    pub border_repel_strength: f32,
     // Mouse attractor/repulsor — set by app.rs each frame before dispatch.
     pub mouse_x:        f32,
     pub mouse_y:        f32,
@@ -299,6 +301,7 @@ impl SimulationState {
             attraction,
             paused: false,
             border_mode: 0,
+            border_repel_strength: 0.3,
             mouse_x: 0.5,
             mouse_y: 0.5,
             mouse_strength: 0.0,
@@ -348,6 +351,8 @@ impl SimulationState {
 
     /// Scatter new particles near `center` with the given scatter `radius`.
     /// `locked_species` pins the species; `None` randomises each particle.
+    /// `aspect` (viewport width / height) corrects the x scatter so the spawn
+    /// region matches the circular screen brush exactly.
     /// Particles are written directly to GPU and are transient — lost on next respawn.
     pub fn spawn_particles(
         &mut self,
@@ -355,19 +360,21 @@ impl SimulationState {
         center: [f32; 2],
         radius: f32,
         locked_species: Option<usize>,
+        aspect: f32,
+        batch_size: u32,
     ) {
-        const BATCH: u32 = 50;
         let max = MAX_PARTICLES as u32;
         if self.gpu_particle_count >= max { return; }
 
-        let n = BATCH.min(max - self.gpu_particle_count);
+        let n = batch_size.min(max - self.gpu_particle_count);
         let mut batch: Vec<Particle> = Vec::with_capacity(n as usize);
         for _ in 0..n {
             let angle = self.rng.next_f32() * (2.0 * std::f32::consts::PI);
-            let r = self.rng.next_f32() * radius;
+            let r = self.rng.next_f32().sqrt() * radius; // sqrt for uniform area distribution
             let sp = locked_species
                 .unwrap_or_else(|| (self.rng.next_u32() as usize) % self.species_count);
-            let x = center[0] + r * angle.cos();
+            // Divide x by aspect so the world-space ellipse maps to a screen circle.
+            let x = center[0] + r * angle.cos() / aspect;
             let y = center[1] + r * angle.sin();
             batch.push(Particle {
                 position: [x - x.floor(), y - y.floor()],
@@ -401,8 +408,9 @@ impl SimulationState {
             mouse_y:        self.mouse_y,
             mouse_strength: self.mouse_strength,
             mouse_range:    self.mouse_range,
-            border_mode:    self.border_mode,
-            _pad:           [0; 3],
+            border_mode:           self.border_mode,
+            border_repel_strength: self.border_repel_strength,
+            _pad:                  [0; 2],
         }));
         queue.write_buffer(&self.attraction_buf, 0, bytemuck::cast_slice(&self.attraction));
 
