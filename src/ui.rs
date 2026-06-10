@@ -184,9 +184,9 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> (bool, bool) {
             });
             if sim.border_mode == 1 {
                 ui.add(
-                    egui::Slider::new(&mut sim.border_repel_strength, 0.05..=2.0)
+                    egui::Slider::new(&mut sim.border_repel_strength, 0.1..=30.0)
                         .text("Repel Force")
-                        .step_by(0.05),
+                        .step_by(0.1),
                 );
             }
 

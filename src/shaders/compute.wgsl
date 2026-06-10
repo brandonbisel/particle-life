@@ -124,23 +124,25 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Border repel force (mode 1): spring pushes particles away from each wall within r_max.
     if params.border_mode == 1u {
-        let brange     = r_max;
-        let peak_speed = brange / params.dt * params.border_repel_strength;
+        // border_repel_strength is in world-units/s at the wall surface (t=1).
+        // Multiplying by dt makes the impulse frame-rate independent; vel_eq = strength/friction.
+        let brange = r_max;
+        let s      = params.border_repel_strength * params.dt;
         if subj.position.x < brange {
             let t = 1.0 - subj.position.x / brange;
-            vel.x += t * t * peak_speed * params.dt;
+            vel.x += t * t * s;
         }
         if subj.position.x > 1.0 - brange {
             let t = 1.0 - (1.0 - subj.position.x) / brange;
-            vel.x -= t * t * peak_speed * params.dt;
+            vel.x -= t * t * s;
         }
         if subj.position.y < brange {
             let t = 1.0 - subj.position.y / brange;
-            vel.y += t * t * peak_speed * params.dt;
+            vel.y += t * t * s;
         }
         if subj.position.y > 1.0 - brange {
             let t = 1.0 - (1.0 - subj.position.y) / brange;
-            vel.y -= t * t * peak_speed * params.dt;
+            vel.y -= t * t * s;
         }
     }
 

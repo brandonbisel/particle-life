@@ -301,7 +301,7 @@ impl SimulationState {
             attraction,
             paused: false,
             border_mode: 0,
-            border_repel_strength: 0.3,
+            border_repel_strength: 5.0,
             mouse_x: 0.5,
             mouse_y: 0.5,
             mouse_strength: 0.0,
