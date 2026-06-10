@@ -2,6 +2,60 @@ use std::collections::VecDeque;
 
 use crate::simulation::{SimulationState, MAX_SPECIES, PALETTE};
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum Tool {
+    Pan,
+    ZoomIn,
+    ZoomOut,
+    Attract,
+    Repel,
+    Spawn,
+}
+
+pub fn draw_toolbar(
+    ctx: &egui::Context,
+    tool: &mut Tool,
+    tool_range: &mut f32,
+    mouse_strength: &mut f32,
+) {
+    egui::Window::new("Tools")
+        .default_pos([10.0, 560.0])
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(tool, Tool::Pan,     "Pan");
+                ui.selectable_value(tool, Tool::ZoomIn,  "Zoom +");
+                ui.selectable_value(tool, Tool::ZoomOut, "Zoom -");
+                ui.selectable_value(tool, Tool::Attract, "Attract");
+                ui.selectable_value(tool, Tool::Repel,   "Repel");
+                ui.selectable_value(tool, Tool::Spawn,   "Spawn");
+            });
+            match *tool {
+                Tool::Attract | Tool::Repel => {
+                    ui.add(
+                        egui::Slider::new(tool_range, 0.02..=0.4)
+                            .text("Range")
+                            .step_by(0.01),
+                    );
+                    ui.add(
+                        egui::Slider::new(mouse_strength, 0.1..=10.0)
+                            .text("Strength")
+                            .step_by(0.1),
+                    );
+                }
+                Tool::Spawn => {
+                    ui.add(
+                        egui::Slider::new(tool_range, 0.01..=0.3)
+                            .text("Radius")
+                            .step_by(0.005),
+                    );
+                }
+                _ => {}
+            }
+        });
+}
+
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
 }

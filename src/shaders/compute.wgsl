@@ -6,14 +6,18 @@ struct Particle {
 }
 
 struct SimParams {
-    dt:          f32,
-    r_min:       f32,
-    r_max:       f32,
-    friction:    f32,
-    n_particles: u32,
-    n_species:   u32,
-    force_scale: f32,
-    aspect:      f32,  // viewport width / height; used for isotropic visual distances
+    dt:             f32,
+    r_min:          f32,
+    r_max:          f32,
+    friction:       f32,
+    n_particles:    u32,
+    n_species:      u32,
+    force_scale:    f32,
+    aspect:         f32,
+    mouse_x:        f32,
+    mouse_y:        f32,
+    mouse_strength: f32,
+    mouse_range:    f32,
 }
 
 struct SortedEntry {
@@ -102,6 +106,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var vel = particles[i].velocity + force_acc * (params.force_scale * params.dt);
     vel    *= exp(-params.friction * params.dt);
+
+    // Mouse attractor / repulsor — strength bypasses force_scale; sign: + = attract, - = repel.
+    if params.mouse_strength != 0.0 && params.mouse_range > 0.0 {
+        let m_delta = torus_delta(subj.position, vec2<f32>(params.mouse_x, params.mouse_y));
+        let m_dx    = m_delta.x * aspect;
+        let m_dsq   = m_dx * m_dx + m_delta.y * m_delta.y;
+        let m_rsq   = params.mouse_range * params.mouse_range;
+        if m_dsq > 1e-8 && m_dsq < m_rsq {
+            let m_dist = sqrt(m_dsq);
+            let t = 1.0 - m_dist / params.mouse_range;
+            vel += (m_delta / m_dist) * (params.mouse_strength * t * t * params.dt);
+        }
+    }
 
     // CFL guard: cap speed so a particle travels at most 0.25 * r_max per step.
     let max_speed = params.r_max / params.dt * 0.25;

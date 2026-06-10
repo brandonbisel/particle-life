@@ -18,14 +18,19 @@ pub const PALETTE: [u32; 8] = [
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct SimParams {
-    dt:          f32,
-    r_min:       f32,
-    r_max:       f32,
-    friction:    f32,
-    n_particles: u32,
-    n_species:   u32,
-    force_scale: f32,
-    aspect:      f32,
+    dt:             f32,
+    r_min:          f32,
+    r_max:          f32,
+    friction:       f32,
+    n_particles:    u32,
+    n_species:      u32,
+    force_scale:    f32,
+    aspect:         f32,
+    // Mouse attractor/repulsor (world-space coords; strength=0 means inactive).
+    mouse_x:        f32,
+    mouse_y:        f32,
+    mouse_strength: f32,  // positive = attract, negative = repel
+    mouse_range:    f32,  // world-space radius of influence
 }
 
 pub struct SimulationState {
@@ -38,7 +43,13 @@ pub struct SimulationState {
     pub particle_radius: f32,
     pub attraction:     [f32; 64], // row-major 8×8; A[i,j] = attraction[i*8+j]
     pub paused:         bool,
+    // Mouse attractor/repulsor — set by app.rs each frame before dispatch.
+    pub mouse_x:        f32,
+    pub mouse_y:        f32,
+    pub mouse_strength: f32, // positive = attract, negative = repel, 0 = inactive
+    pub mouse_range:    f32, // world-space radius of influence
 
+    gpu_particle_count: u32, // may exceed particles.len() after spawn_particles calls
     particles:          Vec<Particle>, // CPU copy used for respawn seeding only
     rng:                Rng,
 
@@ -284,6 +295,11 @@ impl SimulationState {
             particle_radius: 1.5,
             attraction,
             paused: false,
+            mouse_x: 0.5,
+            mouse_y: 0.5,
+            mouse_strength: 0.0,
+            mouse_range: 0.1,
+            gpu_particle_count: 0,
             particles: Vec::new(),
             rng,
             particle_buf,
@@ -323,23 +339,56 @@ impl SimulationState {
             });
         }
         queue.write_buffer(&self.particle_buf, 0, bytemuck::cast_slice(&self.particles));
+        self.gpu_particle_count = self.particles.len() as u32;
+    }
+
+    /// Scatter `count` new particles near `center` with the given scatter `radius`.
+    /// Particles are written directly to GPU; they are transient and lost on the next respawn.
+    pub fn spawn_particles(&mut self, queue: &wgpu::Queue, center: [f32; 2], radius: f32) {
+        const BATCH: u32 = 50;
+        let max = MAX_PARTICLES as u32;
+        if self.gpu_particle_count >= max { return; }
+
+        let n = BATCH.min(max - self.gpu_particle_count);
+        let mut batch: Vec<Particle> = Vec::with_capacity(n as usize);
+        for _ in 0..n {
+            let angle = self.rng.next_f32() * (2.0 * std::f32::consts::PI);
+            let r = self.rng.next_f32() * radius;
+            let species = (self.rng.next_u32() as usize) % self.species_count;
+            let x = center[0] + r * angle.cos();
+            let y = center[1] + r * angle.sin();
+            batch.push(Particle {
+                position: [x - x.floor(), y - y.floor()],
+                velocity: [0.0, 0.0],
+                color: PALETTE[species],
+                species: species as u32,
+            });
+        }
+
+        let offset = self.gpu_particle_count as u64 * std::mem::size_of::<Particle>() as u64;
+        queue.write_buffer(&self.particle_buf, offset, bytemuck::cast_slice(&batch));
+        self.gpu_particle_count += n;
     }
 
     /// Run the five-pass spatial-grid force pipeline.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, dt: f32, aspect: f32) {
         if self.paused { return; }
-        let n = self.particles.len() as u32;
+        let n = self.gpu_particle_count;
         if n == 0 { return; }
 
         queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&SimParams {
             dt,
-            r_min:       self.r_min,
-            r_max:       self.r_max,
-            friction:    self.friction,
-            n_particles: n,
-            n_species:   self.species_count as u32,
-            force_scale: self.force_scale,
+            r_min:          self.r_min,
+            r_max:          self.r_max,
+            friction:       self.friction,
+            n_particles:    n,
+            n_species:      self.species_count as u32,
+            force_scale:    self.force_scale,
             aspect,
+            mouse_x:        self.mouse_x,
+            mouse_y:        self.mouse_y,
+            mouse_strength: self.mouse_strength,
+            mouse_range:    self.mouse_range,
         }));
         queue.write_buffer(&self.attraction_buf, 0, bytemuck::cast_slice(&self.attraction));
 
@@ -408,7 +457,7 @@ impl SimulationState {
     }
 
     pub fn particle_count_gpu(&self) -> u32 {
-        self.particles.len() as u32
+        self.gpu_particle_count
     }
 }
 

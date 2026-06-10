@@ -1,7 +1,10 @@
 struct Globals {
     viewport:        vec2<f32>,
     particle_radius: f32,
-    _pad:            f32,
+    _pad0:           f32,
+    camera_center:   vec2<f32>,
+    camera_zoom:     f32,
+    _pad1:           f32,
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -39,8 +42,9 @@ fn vs_main(
     let corner = corners[vi];
     let r_px   = globals.particle_radius;
 
-    // Convert simulation [0,1]² → NDC [-1,1]²
-    let ndc_pos = pos * 2.0 - vec2<f32>(1.0, 1.0);
+    // Convert simulation [0,1]² → NDC [-1,1]² with camera transform.
+    // camera_center is the world point at screen center; zoom=1 shows the full [0,1]² world.
+    let ndc_pos = (pos - globals.camera_center) * (globals.camera_zoom * 2.0);
 
     // Scale corner by pixel radius, corrected for aspect ratio
     let ndc_off = corner * vec2<f32>(

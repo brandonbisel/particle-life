@@ -75,7 +75,7 @@ impl WgpuState {
 
         let globals_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Globals"),
-            size: 16,
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -180,7 +180,7 @@ impl WgpuState {
             globals_bind_group,
             particle_radius: 3.0,
         };
-        state.update_globals();
+        state.update_globals([0.5, 0.5], 1.0);
         state
     }
 
@@ -191,10 +191,10 @@ impl WgpuState {
         self.surface_config.width = new_size.width;
         self.surface_config.height = new_size.height;
         self.surface.configure(&self.device, &self.surface_config);
-        self.update_globals();
+        // globals are updated at the start of each render() call
     }
 
-    fn update_globals(&self) {
+    fn update_globals(&self, camera_center: [f32; 2], camera_zoom: f32) {
         self.queue.write_buffer(
             &self.globals_buf,
             0,
@@ -202,6 +202,10 @@ impl WgpuState {
                 self.surface_config.width as f32,
                 self.surface_config.height as f32,
                 self.particle_radius,
+                0.0f32,
+                camera_center[0],
+                camera_center[1],
+                camera_zoom,
                 0.0f32,
             ]),
         );
@@ -214,6 +218,8 @@ impl WgpuState {
         pixels_per_point: f32,
         sim: &SimulationState,
         dt: f32,
+        camera_center: [f32; 2],
+        camera_zoom: f32,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -223,7 +229,7 @@ impl WgpuState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Frame") });
 
         self.particle_radius = sim.particle_radius;
-        self.update_globals();
+        self.update_globals(camera_center, camera_zoom);
 
         let aspect = self.surface_config.width as f32 / self.surface_config.height as f32;
         sim.dispatch(&mut encoder, &self.queue, dt, aspect);
