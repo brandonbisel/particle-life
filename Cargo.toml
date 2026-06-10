@@ -1,0 +1,15 @@
+[package]
+name = "ParticleLife"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit      = "0.30"
+wgpu       = "24"
+egui       = "0.31"
+egui-winit = "0.31"
+egui-wgpu  = "0.31"
+log        = "0.4"
+env_logger = "0.11"
+bytemuck   = { version = "1", features = ["derive"] }
+pollster   = "0.3"
