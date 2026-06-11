@@ -66,7 +66,7 @@ impl Preset {
 
 /// Returns the 4 hardcoded benchmark/built-in presets.
 pub fn builtin_presets() -> Vec<Preset> {
-    vec![clusters(), chains(), rich_mix(), separation()]
+    vec![clusters(), chains(), rich_mix(), symbiosis()]
 }
 
 fn clusters() -> Preset {
@@ -119,17 +119,19 @@ fn rich_mix() -> Preset {
     )
 }
 
-fn separation() -> Preset {
-    const N: usize = 4;
+fn symbiosis() -> Preset {
+    // Structural inverse of Clusters: cross-species attraction, mild self-repulsion.
+    // Produces large mixed-colour aggregates instead of separated blobs.
+    const N: usize = 6;
     let mut a = vec![0.0f32; N * N];
     for i in 0..N {
         for j in 0..N {
-            a[i * N + j] = if i == j { 0.5 } else { -0.9 };
+            a[i * N + j] = if i == j { -0.1 } else { 0.6 };
         }
     }
     Preset::new(
-        "Separation",
-        "Species strongly repel all other species and clump separately.",
+        "Symbiosis",
+        "Every species attracts all others but weakly repels its own kind; produces large mixed-colour aggregates.",
         N,
         a,
     )
