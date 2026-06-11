@@ -26,6 +26,18 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 
 ## Architecture
 
+### Module Summary
+
+| Module | Role |
+|--------|------|
+| `main.rs` | Entry point; creates `EventLoop` with `ControlFlow::Poll` |
+| `app.rs` | `AppHandler` / `AppState`; event routing, camera, per-frame orchestration |
+| `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
+| `simulation.rs` | `SimulationState`; GPU buffers, 5-pass compute dispatch, preset apply, spawn |
+| `config.rs` | `Preset` struct, four built-in presets, TOML I/O, session persistence |
+| `benchmark.rs` | `QuickBench` (ad-hoc) and `BenchmarkRunner` (full suite + CSV export) |
+| `ui.rs` | All egui draw functions; returns response structs — no app state owned here |
+
 ### Data Flow Per Frame
 
 ```
@@ -58,7 +70,7 @@ The reorder pass is performance-critical. Without it, the force pass does random
 ### Spatial Grid
 
 - Cell size = `r_max / 2`, so `grid_w = max(5, floor(2 / r_max))`
-- MAX_GRID_CELLS = 40,000 (supports r_max as small as 0.01 → 200×200)
+- `MAX_GRID_CELLS = 40,000` (supports r_max as small as 0.01 → 200×200)
 - Cell index = `y * grid_w + x`, both axes wrapped modulo grid_w
 
 ### Key Structs
@@ -72,7 +84,16 @@ species:  u32        // offset 20 — index into attraction matrix row
 ```
 The vertex buffer layout in `renderer.rs` and the WGSL struct in every shader must match this exactly. Changing the stride or field order breaks both rendering and compute.
 
-**`SimParams` (64 bytes, `repr(C)`, pad to 4×16B for uniform alignment)**
+**`SimParams` (64 bytes, `repr(C)`, padded to 4×16B for uniform alignment)**
+
+```
+dt, r_min, r_max, friction          (16B)
+n_particles, n_species, force_scale, aspect  (16B)
+mouse_x, mouse_y, mouse_strength, mouse_range  (16B)
+border_mode: u32, border_repel_strength: f32, _pad: [u32; 2]  (16B)
+```
+
+`aspect` is `world_width / world_height` (the simulation world's aspect ratio), **not** the viewport pixel ratio. The shader uses it to make inter-particle distances isotropic on screen and to equalize the border repel zone depth on all four walls.
 
 **`SortedEntry` (16 bytes)** — `position: vec2<f32>`, `species: u32`, `index: u32`
 
@@ -86,26 +107,47 @@ The vertex buffer layout in `renderer.rs` and the WGSL struct in every shader mu
 
 In the force shader, use `torus_delta` for neighbor distances only when `border_mode == 0`. In repel/static modes, direct deltas are correct — cross-boundary attraction should vanish naturally.
 
-## Critical winit/wgpu Patterns
+The border repel zone uses `brange_x = r_max / aspect` for the left/right walls and `brange_y = r_max` for top/bottom. This equalises the visual zone depth on all four walls regardless of world aspect ratio.
 
-- **Window creation**: only in `resumed()` — on Wayland the window handle is not valid before the first `resumed()` call
-- **`Arc<Window>` → `Surface<'static>`**: wrap in `Arc` before passing to `create_surface` so the surface lifetime is `'static`
-- **`request_redraw()`**: call in `about_to_wait()`, not inside `RedrawRequested` — calling it from within the redraw handler can cause missed frames on some platforms
-- **egui render pass**: `begin_render_pass(...).forget_lifetime()` is required; `egui_wgpu::Renderer::render()` needs `&mut RenderPass<'static>`
-- **egui buffer uploads**: `update_buffers()` returns `Vec<CommandBuffer>` that must be submitted **before** the main encoder — they are staging uploads that the render pass depends on
-- **Window drop order**: `window: Arc<Window>` must be the last field in `AppState`; `Surface<'static>` holds a raw pointer into it and must drop first
+## Camera Model
+
+`AppState` holds two zoom values:
+
+- `camera.zoom_factor: f32` — user zoom relative to fit (1.0 = default, 2.0 = 2× in)
+- `fit_zoom: f32` — computed from world size + viewport so the full world fits the window at `zoom_factor = 1.0`
+- `shader_zoom = camera.zoom_factor * fit_zoom` — passed to the GPU and `world_to_screen()`
+
+`fit_zoom` is recomputed whenever the window resizes or world dimensions change (`compute_fit_zoom(world_w, world_h, vp_w, vp_h)`).
+
+The vertex shader converts world → NDC as:
+```wgsl
+ndc = (pos - camera_center) * (shader_zoom * 2.0)
+```
 
 ## Coordinate Systems
 
 - **World space**: `[0, 1]²`, origin bottom-left, y increases upward
 - **Screen/NDC**: standard wgpu NDC (-1 to 1), y increases upward
 - **Cursor**: `PhysicalPosition<f64>` from winit, y increases downward — `screen_to_world()` in `app.rs` handles the flip
-- **Camera**: `center` is the world point at screen center; `zoom = 1.0` shows the full `[0,1]²` world; `zoom = 2.0` is 2× magnification
+- **Camera**: `center` is the world point at screen center; panning is clamped so the world border never passes the viewport center
 
-The vertex shader converts world → NDC as:
-```wgsl
-ndc = (pos - camera_center) * (camera_zoom * 2.0)
-```
+## World Size
+
+`SimulationState` stores `world_width: f32` and `world_height: f32` (in simulation units, default 1280×720). The simulation always runs in normalised `[0,1]²` coordinates; `world_width/world_height` is used purely as an aspect ratio (`world_aspect()`) passed to the shader.
+
+`fit_zoom` in `app.rs` is derived from these dimensions so the world fills the viewport at default zoom regardless of the world's aspect ratio.
+
+## Preset System
+
+`config::Preset` is a TOML-serialisable snapshot of all simulation parameters. Key functions:
+
+- `builtin_presets()` — four compiled-in presets used by the benchmark suite and preset picker
+- `load_presets_dir()` — scans `presets/*.toml` on startup
+- `save_session` / `load_session` — auto-save to `session.toml` on exit, restore on startup
+- `SimulationState::apply_preset()` — copies all fields and calls `respawn()`
+- `SimulationState::to_preset()` — snapshot current state (used for export and session save)
+
+The `attraction` field in a preset is a compact `species_count × species_count` `Vec<f32>`. `apply_preset` expands it into the full 8×8 GPU layout.
 
 ## Attraction Matrix
 
@@ -137,9 +179,19 @@ The shader applies a quadratic falloff: `vel += direction * (strength * t² * dt
 
 CFL velocity cap in the shader: `max_speed = r_max / dt * 0.25`. This prevents tunneling. Do not remove it.
 
+## Critical winit/wgpu Patterns
+
+- **Window creation**: only in `resumed()` — on Wayland the window handle is not valid before the first `resumed()` call
+- **`Arc<Window>` → `Surface<'static>`**: wrap in `Arc` before passing to `create_surface` so the surface lifetime is `'static`
+- **`request_redraw()`**: call in `about_to_wait()`, not inside `RedrawRequested` — calling it from within the redraw handler can cause missed frames on some platforms
+- **egui render pass**: `begin_render_pass(...).forget_lifetime()` is required; `egui_wgpu::Renderer::render()` needs `&mut RenderPass<'static>`
+- **egui buffer uploads**: `update_buffers()` returns `Vec<CommandBuffer>` that must be submitted **before** the main encoder — they are staging uploads that the render pass depends on
+- **Window drop order**: `window: Arc<Window>` must be the last field in `AppState`; `Surface<'static>` holds a raw pointer into it and must drop first
+
 ## What Not to Change Without Care
 
 - **`encoder.clear_buffer(&cell_counts_buf, ...)`** before the count pass — must happen every frame; forgetting it produces garbage grid data
 - **Workgroup dispatch**: `(n + 63) / 64` — standard ceiling division for 64-thread workgroups
 - **Prefix scan dispatch**: always `(1, 1, 1)` — it's a serial scan of at most 40,000 elements, intentionally single-workgroup
 - **`PresentMode::Fifo`** — vsync; changing to `Mailbox` or `Immediate` is valid for uncapped FPS but changes perceived behavior
+- **`brange_x = r_max / aspect`** in the border repel section of `compute.wgsl` — equalises the visual repel zone on all four walls; removing the aspect correction makes left/right walls appear ~1.78× wider than top/bottom on a 16:9 display

@@ -10,8 +10,9 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 - **500K particles** at 20–40 fps
 - **8 species** with a fully editable N×N attraction matrix
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
-- **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn
-- **Mouse attractor/repulsor** with adjustable range and strength
+- **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
+- **Configurable world size** — independent of window size; zoom/pan always shows the full world at fit
+- **Preset system** — save, load, and import/export TOML presets; four built-in presets included
 - **Real-time controls:** particle count, species, physics params, matrix randomization
 - **Performance overlay:** FPS, frame time min/max/avg, grid stats
 
@@ -67,31 +68,46 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `egui` + `egui-winit` + `egui-wgpu` | 0.31 | Immediate-mode UI overlay |
 | `bytemuck` | 1 | Safe Pod casts for GPU buffer uploads |
 | `pollster` | 0.3 | Block on async wgpu initialization |
+| `serde` + `toml` | 1 / 0.8 | Preset serialisation |
+| `rfd` | 0.15 | Native file dialogs for import/export |
 
 ## Controls
 
-| Tool | Action |
-|------|--------|
-| **Pan** | Click and drag to pan the camera |
-| **Zoom +/−** | Click to zoom in/out centered on cursor |
-| **Attract** | Hold click to pull particles toward cursor |
-| **Repel** | Hold click to push particles away from cursor |
-| **Spawn** | Hold click to emit new particles at cursor |
-| **Scroll wheel** | Zoom in/out |
-| **Reset View** | Return camera to default |
+### Mouse
+
+| Action | Effect |
+|--------|--------|
+| **Drag** (Pan tool) | Pan the camera |
+| **Middle-click drag** | Pan the camera (any tool) |
+| **Scroll wheel** | Zoom in/out centered on cursor |
+| **Click** (Zoom +/−) | Zoom in/out centered on cursor |
+| **Hold click** (Attract/Repel) | Pull/push particles toward cursor |
+| **Hold click** (Spawn) | Emit new particles at cursor |
+
+### Keyboard
+
+| Key | Effect |
+|-----|--------|
+| `Arrow keys` | Pan |
+| `+` / `=` | Zoom in |
+| `-` | Zoom out |
+| `0` | Reset view |
+| `Escape` | Quit |
 
 ## Project Structure
 
 ```
 src/
   main.rs              — Entry point; EventLoop + ControlFlow::Poll
-  app.rs               — ApplicationHandler; owns window, renderer, sim, egui state
+  app.rs               — ApplicationHandler; owns window, renderer, sim, egui state, camera
   renderer.rs          — wgpu device/surface/pipeline; render() drives one frame
-  simulation.rs        — SimulationState; GPU buffers, 5-pass dispatch, spawn
+  simulation.rs        — SimulationState; GPU buffers, 5-pass dispatch, spawn, preset apply
+  benchmark.rs         — QuickBench (ad-hoc) and BenchmarkRunner (full suite + CSV export)
+  config.rs            — Preset struct, built-in presets, TOML save/load, session persistence
   ui.rs                — egui panels: toolbar, params, attraction matrix, perf overlay
   shaders/
     particle.wgsl      — Instanced soft-circle vertex + fragment shader
-    compute.wgsl        — Force integration (pass 5)
+    compute.wgsl       — Force integration (pass 5)
     grid_count.wgsl    — Spatial grid pass 1
     grid_prefix.wgsl   — Spatial grid pass 2
     grid_scatter.wgsl  — Spatial grid pass 3
@@ -107,5 +123,6 @@ src/
 | `friction` | 0.5 | Velocity half-life ~1.4s |
 | `force_scale` | 0.007 | Global force multiplier |
 | `particle_radius` | 1.5 px | Rendered size |
+| `world_width/height` | 1280 × 720 | Simulation world dimensions (units) |
 | Max particles | 500,000 | Hard GPU buffer limit |
 | Max species | 8 | Attraction matrix dimension |
