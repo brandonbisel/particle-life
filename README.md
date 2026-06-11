@@ -93,6 +93,7 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
 | `0` | Reset view |
+| `F11` | Toggle fullscreen |
 | `Escape` | Quit |
 
 ## Project Structure

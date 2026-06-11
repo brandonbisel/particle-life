@@ -14,10 +14,10 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::ActiveEventLoop,
     keyboard::{Key, NamedKey},
-    window::{Window, WindowId},
+    window::{Fullscreen, Window, WindowId},
 };
 
-use crate::{benchmark, config, renderer::WgpuState, simulation::SimulationState, ui};
+use crate::{benchmark, config, icon, renderer::WgpuState, simulation::SimulationState, ui};
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 
@@ -132,15 +132,31 @@ impl ApplicationHandler for AppHandler {
             return;
         }
 
+        // On Linux, write icon + .desktop so the Wayland compositor can find
+        // the icon via XDG lookup (native Wayland ignores set_window_icon).
+        #[cfg(target_os = "linux")]
+        icon::install_xdg_resources();
+
+        let mut win_attrs = Window::default_attributes()
+            .with_title("Particle Life")
+            .with_inner_size(winit::dpi::LogicalSize::new(1280u32, 720u32));
+
+        // Set the Wayland app_id so the compositor links us to the .desktop
+        // entry and displays the correct icon in the taskbar.
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::wayland::WindowAttributesExtWayland;
+            win_attrs = win_attrs.with_name("particle-life", "particle-life");
+        }
+
         let window = Arc::new(
             event_loop
-                .create_window(
-                    Window::default_attributes()
-                        .with_title("Particle Life")
-                        .with_inner_size(winit::dpi::LogicalSize::new(1280u32, 720u32)),
-                )
+                .create_window(win_attrs)
                 .expect("Failed to create window"),
         );
+
+        // X11 / XWayland: sets _NET_WM_ICON on the window directly.
+        window.set_window_icon(Some(icon::app_icon()));
 
         let renderer = WgpuState::new(Arc::clone(&window));
         let size = window.inner_size();
@@ -387,6 +403,15 @@ impl ApplicationHandler for AppHandler {
                 ..
             } => {
                 if !resp.consumed {
+                    // F11 toggles borderless fullscreen regardless of other key state
+                    if logical_key == Key::Named(NamedKey::F11) {
+                        window.set_fullscreen(if window.fullscreen().is_some() {
+                            None
+                        } else {
+                            Some(Fullscreen::Borderless(None))
+                        });
+                    }
+
                     let step = 0.1 / (state.camera.zoom_factor * state.fit_zoom);
                     match logical_key {
                         Key::Named(NamedKey::ArrowLeft) => {
@@ -493,9 +518,12 @@ impl ApplicationHandler for AppHandler {
                             vsync,
                             vsync_available,
                         );
-                        reset_view = ui::draw_toolbar(
+                        let (rv, toolbar_rect) = ui::draw_toolbar(ctx, tool);
+                        reset_view = rv;
+                        ui::draw_tool_options(
                             ctx,
-                            tool,
+                            *tool,
+                            toolbar_rect,
                             tool_range,
                             mouse_strength,
                             spawn_species,

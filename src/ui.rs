@@ -50,18 +50,12 @@ pub enum Tool {
     Spawn,
 }
 
-/// Draw the right-side vertical toolbar: icon tool buttons, per-tool sliders, and spawn palette.
+/// Draw the right-side vertical toolbar: icon tool buttons and Reset View.
 ///
-/// Returns `true` if the "Reset View" button was clicked.
-pub fn draw_toolbar(
-    ctx: &egui::Context,
-    tool: &mut Tool,
-    tool_range: &mut f32,
-    mouse_strength: &mut f32,
-    spawn_species: &mut Option<usize>,
-    spawn_rate: &mut u32,
-    n_species: usize,
-) -> bool {
+/// Returns `(reset_view_clicked, toolbar_screen_rect)`.  The caller should
+/// pass the rect to [`draw_tool_options`] so it can position itself flush
+/// against the toolbar's left edge.
+pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) {
     // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
     let response = egui::Area::new(egui::Id::new("toolbar"))
         .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
@@ -153,77 +147,103 @@ pub fn draw_toolbar(
                         rv = true;
                     }
 
-                    match *tool {
-                        Tool::Attract | Tool::Repel => {
-                            ui.separator();
-                            ui.add(
-                                egui::Slider::new(tool_range, 0.02..=0.4)
-                                    .text("Range")
-                                    .step_by(0.01),
-                            )
-                            .on_hover_text("Radius of the mouse influence zone");
-                            ui.add(
-                                egui::Slider::new(mouse_strength, 0.1..=10.0)
-                                    .text("Strength")
-                                    .step_by(0.1),
-                            )
-                            .on_hover_text("How strongly the tool affects nearby particles");
-                        }
-                        Tool::Spawn => {
-                            ui.separator();
-                            ui.add(
-                                egui::Slider::new(tool_range, 0.01..=0.3)
-                                    .text("Radius")
-                                    .step_by(0.005),
-                            )
-                            .on_hover_text("Radius of the spawn zone around the cursor");
-                            ui.add(
-                                egui::Slider::new(spawn_rate, 1..=500)
-                                    .text("Rate (per frame)")
-                                    .logarithmic(true),
-                            )
-                            .on_hover_text("Number of particles spawned per frame while holding");
-                            ui.separator();
-                            ui.horizontal_wrapped(|ui| {
-                                let any_sel = spawn_species.is_none();
-                                if ui
-                                    .selectable_label(any_sel, "Any")
-                                    .on_hover_text("Spawn a random species")
-                                    .clicked()
-                                {
-                                    *spawn_species = None;
-                                }
-                                for i in 0..n_species {
-                                    let color = species_color(i);
-                                    let is_sel = *spawn_species == Some(i);
-                                    let (rect, resp) = ui.allocate_exact_size(
-                                        egui::Vec2::splat(22.0),
-                                        egui::Sense::click(),
-                                    );
-                                    ui.painter().rect_filled(rect, 3.0, color);
-                                    if is_sel {
-                                        ui.painter().rect_stroke(
-                                            rect,
-                                            egui::CornerRadius::same(3),
-                                            egui::Stroke::new(2.0, egui::Color32::WHITE),
-                                            egui::StrokeKind::Outside,
-                                        );
-                                    }
-                                    if resp.clicked() {
-                                        *spawn_species = Some(i);
-                                    }
-                                }
-                            });
-                        }
-                        _ => {}
-                    }
-
                     rv
                 })
                 .inner
         });
 
-    response.inner
+    (response.inner, response.response.rect)
+}
+
+/// Draw the floating tool-options panel when a parametric tool is active.
+///
+/// The panel appears flush to the left of the toolbar (using `toolbar_rect`
+/// from the current frame's [`draw_toolbar`] call) and disappears entirely
+/// when Pan, ZoomIn, or ZoomOut is selected.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_tool_options(
+    ctx: &egui::Context,
+    tool: Tool,
+    toolbar_rect: egui::Rect,
+    tool_range: &mut f32,
+    mouse_strength: &mut f32,
+    spawn_species: &mut Option<usize>,
+    spawn_rate: &mut u32,
+    n_species: usize,
+) {
+    if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
+        return;
+    }
+
+    // Anchor the panel's right edge 5px to the left of the toolbar.
+    let vp_width = ctx.screen_rect().width();
+    let x_offset = -(vp_width - toolbar_rect.left() + 5.0);
+
+    egui::Area::new(egui::Id::new("tool_options"))
+        .anchor(egui::Align2::RIGHT_CENTER, [x_offset, 0.0])
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::window(ui.style()).show(ui, |ui| match tool {
+                Tool::Attract | Tool::Repel => {
+                    ui.add(
+                        egui::Slider::new(tool_range, 0.02..=0.4)
+                            .text("Range")
+                            .step_by(0.01),
+                    )
+                    .on_hover_text("Radius of the mouse influence zone");
+                    ui.add(
+                        egui::Slider::new(mouse_strength, 0.1..=10.0)
+                            .text("Strength")
+                            .step_by(0.1),
+                    )
+                    .on_hover_text("How strongly the tool affects nearby particles");
+                }
+                Tool::Spawn => {
+                    ui.add(
+                        egui::Slider::new(tool_range, 0.01..=0.3)
+                            .text("Radius")
+                            .step_by(0.005),
+                    )
+                    .on_hover_text("Radius of the spawn zone around the cursor");
+                    ui.add(
+                        egui::Slider::new(spawn_rate, 1..=500)
+                            .text("Rate (per frame)")
+                            .logarithmic(true),
+                    )
+                    .on_hover_text("Number of particles spawned per frame while holding");
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        let any_sel = spawn_species.is_none();
+                        if ui
+                            .selectable_label(any_sel, "Any")
+                            .on_hover_text("Spawn a random species")
+                            .clicked()
+                        {
+                            *spawn_species = None;
+                        }
+                        for i in 0..n_species {
+                            let color = species_color(i);
+                            let is_sel = *spawn_species == Some(i);
+                            let (rect, resp) = ui
+                                .allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::click());
+                            ui.painter().rect_filled(rect, 3.0, color);
+                            if is_sel {
+                                ui.painter().rect_stroke(
+                                    rect,
+                                    egui::CornerRadius::same(3),
+                                    egui::Stroke::new(2.0, egui::Color32::WHITE),
+                                    egui::StrokeKind::Outside,
+                                );
+                            }
+                            if resp.clicked() {
+                                *spawn_species = Some(i);
+                            }
+                        }
+                    });
+                }
+                _ => unreachable!(),
+            });
+        });
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
