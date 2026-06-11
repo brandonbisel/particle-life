@@ -67,7 +67,9 @@ pub fn draw_toolbar(
         .title_bar(false)
         .resizable(false)
         .collapsible(false)
+        .min_width(0.0)
         .show(ctx, |ui| {
+            ui.set_min_width(0.0);
             let icon_sz = egui::Vec2::splat(32.0);
 
             let r = ui
@@ -120,7 +122,7 @@ pub fn draw_toolbar(
             let r = ui
                 .add_sized(
                     icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::Spawn, "◆"),
+                    egui::SelectableLabel::new(*tool == Tool::Spawn, "●"),
                 )
                 .on_hover_text("Spawn — hold to emit new particles at the cursor");
             if r.clicked() {
