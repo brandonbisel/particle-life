@@ -43,11 +43,13 @@ pub struct SimulationState {
     pub r_max:           f32,
     pub friction:        f32,
     pub force_scale:     f32,
-    pub particle_radius: f32,
+    pub particle_radius: f32, // world units
     pub attraction:     [f32; 64], // row-major 8×8; A[i,j] = attraction[i*8+j]
     pub paused:                bool,
     pub border_mode:           u32, // 0 = Wrap, 1 = Repel, 2 = Static
     pub border_repel_strength: f32,
+    pub world_width:  f32, // world units (= pixels at default zoom)
+    pub world_height: f32,
     // Mouse attractor/repulsor — set by app.rs each frame before dispatch.
     pub mouse_x:        f32,
     pub mouse_y:        f32,
@@ -92,11 +94,17 @@ pub struct Particle {
 }
 
 impl SimulationState {
+    pub fn world_aspect(&self) -> f32 {
+        self.world_width / self.world_height
+    }
+
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         particle_count: usize,
         species_count: usize,
+        world_width: f32,
+        world_height: f32,
     ) -> Self {
         // ── Buffers ─────────────────────────────────────────────────────────
         let particle_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -302,6 +310,8 @@ impl SimulationState {
             paused: false,
             border_mode: 0,
             border_repel_strength: 5.0,
+            world_width,
+            world_height,
             mouse_x: 0.5,
             mouse_y: 0.5,
             mouse_strength: 0.0,
@@ -390,7 +400,7 @@ impl SimulationState {
     }
 
     /// Run the five-pass spatial-grid force pipeline.
-    pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, dt: f32, aspect: f32) {
+    pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, dt: f32) {
         if self.paused { return; }
         let n = self.gpu_particle_count;
         if n == 0 { return; }
@@ -403,7 +413,7 @@ impl SimulationState {
             n_particles:    n,
             n_species:      self.species_count as u32,
             force_scale:    self.force_scale,
-            aspect,
+            aspect:         self.world_aspect(),
             mouse_x:        self.mouse_x,
             mouse_y:        self.mouse_y,
             mouse_strength: self.mouse_strength,
@@ -458,6 +468,61 @@ impl SimulationState {
             p.set_pipeline(&self.force_pipeline);
             p.set_bind_group(0, &self.force_bind_group, &[]);
             p.dispatch_workgroups(workgroups, 1, 1);
+        }
+    }
+
+    /// Apply all fields from a `Preset` and respawn particles.
+    pub fn apply_preset(&mut self, queue: &wgpu::Queue, preset: &crate::config::Preset) {
+        self.particle_count        = preset.particle_count.min(MAX_PARTICLES);
+        self.species_count         = preset.species_count.min(MAX_SPECIES);
+        self.world_width           = preset.world_width;
+        self.world_height          = preset.world_height;
+        self.particle_radius       = preset.particle_radius;
+        self.r_min                 = preset.r_min;
+        self.r_max                 = preset.r_max;
+        self.friction              = preset.friction;
+        self.force_scale           = preset.force_scale;
+        self.border_mode           = preset.border_mode;
+        self.border_repel_strength = preset.border_repel_strength;
+
+        // Copy compact n×n matrix into the full 8×8 layout.
+        self.attraction = [0.0f32; 64];
+        let n = self.species_count;
+        let pn = preset.species_count.min(MAX_SPECIES);
+        for i in 0..n.min(pn) {
+            for j in 0..n.min(pn) {
+                if let Some(&v) = preset.attraction.get(i * pn + j) {
+                    self.attraction[i * MAX_SPECIES + j] = v;
+                }
+            }
+        }
+        self.respawn(queue);
+    }
+
+    /// Snapshot current state as a `Preset` (used for session persistence).
+    pub fn to_preset(&self, name: &str) -> crate::config::Preset {
+        let n = self.species_count;
+        let mut attraction = vec![0.0f32; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                attraction[i * n + j] = self.attraction[i * MAX_SPECIES + j];
+            }
+        }
+        crate::config::Preset {
+            name:                  name.into(),
+            description:           String::new(),
+            particle_count:        self.particle_count,
+            species_count:         self.species_count,
+            world_width:           self.world_width,
+            world_height:          self.world_height,
+            particle_radius:       self.particle_radius,
+            r_min:                 self.r_min,
+            r_max:                 self.r_max,
+            friction:              self.friction,
+            force_scale:           self.force_scale,
+            border_mode:           self.border_mode,
+            border_repel_strength: self.border_repel_strength,
+            attraction,
         }
     }
 

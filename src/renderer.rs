@@ -180,7 +180,7 @@ impl WgpuState {
             globals_bind_group,
             particle_radius: 3.0,
         };
-        state.update_globals([0.5, 0.5], 1.0);
+        state.update_globals([0.5, 0.5], 1.0, 1.0, 1.5 / 720.0);
         state
     }
 
@@ -194,19 +194,19 @@ impl WgpuState {
         // globals are updated at the start of each render() call
     }
 
-    fn update_globals(&self, camera_center: [f32; 2], camera_zoom: f32) {
+    fn update_globals(&self, camera_center: [f32; 2], shader_zoom: f32, world_aspect: f32, particle_radius_norm: f32) {
         self.queue.write_buffer(
             &self.globals_buf,
             0,
             bytemuck::cast_slice(&[
                 self.surface_config.width as f32,
                 self.surface_config.height as f32,
-                self.particle_radius,
+                particle_radius_norm,
                 0.0f32,
                 camera_center[0],
                 camera_center[1],
-                camera_zoom,
-                0.0f32,
+                shader_zoom,
+                world_aspect,
             ]),
         );
     }
@@ -219,7 +219,7 @@ impl WgpuState {
         sim: &SimulationState,
         dt: f32,
         camera_center: [f32; 2],
-        camera_zoom: f32,
+        shader_zoom: f32,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -229,10 +229,11 @@ impl WgpuState {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Frame") });
 
         self.particle_radius = sim.particle_radius;
-        self.update_globals(camera_center, camera_zoom);
+        let world_aspect = sim.world_aspect();
+        let particle_radius_norm = sim.particle_radius / sim.world_height;
+        self.update_globals(camera_center, shader_zoom, world_aspect, particle_radius_norm);
 
-        let aspect = self.surface_config.width as f32 / self.surface_config.height as f32;
-        sim.dispatch(&mut encoder, &self.queue, dt, aspect);
+        sim.dispatch(&mut encoder, &self.queue, dt);
 
         // Particle render pass
         {

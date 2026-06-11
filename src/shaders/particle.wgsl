@@ -1,10 +1,10 @@
 struct Globals {
     viewport:        vec2<f32>,
-    particle_radius: f32,
+    particle_radius: f32,    // normalized: particle_radius_wu / world_height
     _pad0:           f32,
     camera_center:   vec2<f32>,
-    camera_zoom:     f32,
-    _pad1:           f32,
+    camera_zoom:     f32,    // shader zoom = zoom_factor * fit_zoom
+    world_aspect:    f32,    // world_width / world_height
 }
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -40,16 +40,25 @@ fn vs_main(
     );
 
     let corner = corners[vi];
-    let r_px   = globals.particle_radius;
+    let viewport_aspect = globals.viewport.x / globals.viewport.y;
 
     // Convert simulation [0,1]² → NDC [-1,1]² with camera transform.
-    // camera_center is the world point at screen center; zoom=1 shows the full [0,1]² world.
-    let ndc_pos = (pos - globals.camera_center) * (globals.camera_zoom * 2.0);
+    // X is scaled by world_aspect / viewport_aspect so the world appears with correct
+    // physical proportions regardless of viewport shape (letterboxed/pillarboxed).
+    let ndc_pos = vec2<f32>(
+        (pos.x - globals.camera_center.x) * globals.world_aspect * globals.camera_zoom * 2.0 / viewport_aspect,
+        (pos.y - globals.camera_center.y) * globals.camera_zoom * 2.0,
+    );
 
-    // Scale corner by pixel radius, corrected for aspect ratio
-    let ndc_off = corner * vec2<f32>(
-        2.0 * r_px / globals.viewport.x,
-        2.0 * r_px / globals.viewport.y,
+    // Particle quad offset: particle_radius is normalized (wu / world_height).
+    // NDC offset is isotropic in screen pixels, producing a circle on screen.
+    // pixel_radius = particle_radius * camera_zoom * viewport_height
+    // ndc_off_x = pixel_radius / (viewport_w/2) = particle_radius * camera_zoom * 2 / viewport_aspect
+    // ndc_off_y = pixel_radius / (viewport_h/2) = particle_radius * camera_zoom * 2
+    let r = globals.particle_radius;
+    let ndc_off = vec2<f32>(
+        corner.x * r * globals.camera_zoom * 2.0 / viewport_aspect,
+        corner.y * r * globals.camera_zoom * 2.0,
     );
 
     var out: VOut;

@@ -1,4 +1,6 @@
 mod app;
+mod benchmark;
+mod config;
 mod renderer;
 mod simulation;
 mod ui;
