@@ -1,10 +1,21 @@
+//! Preset serialisation, built-in preset library, and session persistence.
+//!
+//! A [`Preset`] captures every parameter needed to recreate a simulation state.
+//! Built-in presets are compiled into the binary; user presets are read from
+//! `presets/*.toml` and the last session is auto-saved to `session.toml`.
+
 use std::path::{Path, PathBuf};
 
+/// Path to the auto-save file written on exit and read on startup.
 pub const SESSION_PATH: &str = "session.toml";
+/// Directory scanned for user-created `*.toml` preset files.
 pub const PRESETS_DIR:  &str = "presets";
 
 // ── Preset ────────────────────────────────────────────────────────────────────
 
+/// A complete snapshot of simulation parameters that can be saved and restored.
+///
+/// Serialised as TOML; all fields map directly to [`SimulationState`](crate::simulation::SimulationState).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Preset {
     pub name:                  String,
@@ -12,16 +23,21 @@ pub struct Preset {
     pub description:           String,
     pub particle_count:        usize,
     pub species_count:         usize,
+    /// World width in simulation units (pixels at default zoom).
     pub world_width:           f32,
+    /// World height in simulation units (pixels at default zoom).
     pub world_height:          f32,
     pub particle_radius:       f32,
+    /// Hard-core repulsion radius.
     pub r_min:                 f32,
+    /// Outer interaction cutoff radius.
     pub r_max:                 f32,
     pub friction:              f32,
     pub force_scale:           f32,
+    /// 0 = Wrap, 1 = Repel, 2 = Static.
     pub border_mode:           u32,
     pub border_repel_strength: f32,
-    /// Row-major species_count × species_count attraction matrix.
+    /// Row-major `species_count × species_count` attraction matrix; values in `[-1, 1]`.
     pub attraction:            Vec<f32>,
 }
 
@@ -117,11 +133,13 @@ fn separation() -> Preset {
 
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
+/// Parse a TOML preset from `path`.
 pub fn load_preset_file(path: &Path) -> Result<Preset, String> {
     let s = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
     toml::from_str(&s).map_err(|e| e.to_string())
 }
 
+/// Serialise `preset` to pretty TOML at `path`.
 pub fn save_preset_file(preset: &Preset, path: &Path) -> Result<(), String> {
     let s = toml::to_string_pretty(preset).map_err(|e| e.to_string())?;
     std::fs::write(path, s).map_err(|e| e.to_string())
@@ -152,12 +170,14 @@ pub fn load_presets_dir() -> Vec<Preset> {
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
+/// Persist `preset` as the current session state (best-effort; logs on failure).
 pub fn save_session(preset: &Preset) {
     if let Err(e) = save_preset_file(preset, Path::new(SESSION_PATH)) {
         log::warn!("Failed to save session: {e}");
     }
 }
 
+/// Load the last saved session, if any.
 pub fn load_session() -> Option<Preset> {
     load_preset_file(Path::new(SESSION_PATH)).ok()
 }

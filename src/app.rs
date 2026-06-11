@@ -1,3 +1,9 @@
+//! winit application handler: event routing, camera, and per-frame orchestration.
+//!
+//! [`AppHandler`] is the single winit [`ApplicationHandler`] implementation.
+//! It owns [`AppState`] which is created on the first [`resumed`](ApplicationHandler::resumed)
+//! event and drives the simulation, renderer, and egui each frame.
+
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;

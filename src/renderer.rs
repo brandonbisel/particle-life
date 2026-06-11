@@ -1,3 +1,9 @@
+//! wgpu device/surface management and the particle render pipeline.
+//!
+//! [`WgpuState`] owns the surface, device, and both the egui and particle
+//! render pipelines.  Each frame it calls [`SimulationState::dispatch`] to run
+//! the compute passes before issuing the render pass.
+
 use std::mem::size_of;
 use std::sync::Arc;
 use winit::window::Window;

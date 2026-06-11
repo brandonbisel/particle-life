@@ -1,8 +1,13 @@
+//! Benchmarking utilities: a lightweight ad-hoc snapshot ([`QuickBench`]) and a
+//! full automated suite ([`BenchmarkRunner`]) that cycles through every
+//! combination of built-in preset × particle-count tier and exports CSV results.
+
 use std::path::Path;
 use std::time::Instant;
 
 use crate::config::{builtin_presets, Preset};
 
+/// Particle counts used in each tier of the full benchmark suite.
 pub const BENCHMARK_TIERS: [usize; 4] = [10_000, 50_000, 100_000, 500_000];
 const BUILTIN_COUNT: usize  = 4;
 const WARMUP_FRAMES: u32    = 300;   // ~2s at 165fps, ~7s at 44fps — enough to let structures form
@@ -15,6 +20,8 @@ const GLOBAL_CAP_SECS: f64  = 600.0;
 const QUICK_WARMUP: u32    = 120;   // frames before collection starts
 const QUICK_FRAMES: usize  = 240;   // frames to collect
 
+/// Ad-hoc single-point benchmark: warms up for [`QUICK_WARMUP`] frames then
+/// collects FPS samples for [`QUICK_FRAMES`] frames at the current particle count.
 pub struct QuickBench {
     state: QuickBenchState,
 }
@@ -29,11 +36,13 @@ enum QuickBenchState {
 impl QuickBench {
     pub fn new() -> Self { Self { state: QuickBenchState::Idle } }
 
+    /// Begin a new quick-bench run at the current GPU particle count.
     pub fn start(&mut self, particles: u32) {
         self.state = QuickBenchState::Warmup { frame: 0 };
         let _ = particles; // stored when we enter Collecting
     }
 
+    /// Returns `true` while warmup or sample collection is in progress.
     pub fn is_running(&self) -> bool {
         matches!(self.state, QuickBenchState::Warmup { .. } | QuickBenchState::Collecting { .. })
     }
@@ -76,6 +85,7 @@ impl QuickBench {
         }
     }
 
+    /// Returns `(avg_fps, min_fps, max_fps, particles)` once the run is complete.
     pub fn result(&self) -> Option<(f32, f32, f32, u32)> {
         if let QuickBenchState::Done { avg, min, max, particles } = &self.state {
             Some((*avg, *min, *max, *particles))
@@ -87,6 +97,7 @@ impl QuickBench {
 
 // ── Result ────────────────────────────────────────────────────────────────────
 
+/// Per-combo result produced by [`BenchmarkRunner`].
 #[derive(Clone)]
 pub struct BenchmarkResult {
     pub preset_name:      String,
@@ -109,6 +120,9 @@ enum State {
     Done,
 }
 
+/// Runs the full benchmark suite: every [`builtin_presets`](crate::config::builtin_presets)
+/// × [`BENCHMARK_TIERS`] combination, collecting [`TARGET_FRAMES`] FPS samples per combo
+/// after a [`WARMUP_FRAMES`]-frame warm-up period.
 pub struct BenchmarkRunner {
     state:        State,
     pub results:  Vec<BenchmarkResult>,
@@ -117,10 +131,14 @@ pub struct BenchmarkRunner {
     pub vp_height: u32,
 }
 
+/// Instruction returned by [`BenchmarkRunner::advance`] each frame.
 #[must_use]
 pub enum BenchmarkAction {
+    /// No state change needed; continue rendering normally.
     Continue,
-    LoadCombo(usize),  // caller: apply preset and respawn
+    /// Apply the preset for this combo index and respawn particles.
+    LoadCombo(usize),
+    /// All combos finished; results are available via [`BenchmarkRunner::results`].
     Done,
 }
 
@@ -137,9 +155,12 @@ impl BenchmarkRunner {
         }
     }
 
+    /// Total number of (preset × tier) combinations in the suite.
     pub fn num_combos() -> usize { BUILTIN_COUNT * BENCHMARK_TIERS.len() }
 
+    /// Which built-in preset index a flat combo index maps to.
     pub fn combo_preset_idx(combo: usize) -> usize { combo / BENCHMARK_TIERS.len() }
+    /// Which tier index a flat combo index maps to.
     pub fn combo_tier_idx(combo: usize)   -> usize { combo % BENCHMARK_TIERS.len() }
 
     /// Returns the Preset for a given combo with particle_count already set.
@@ -150,13 +171,16 @@ impl BenchmarkRunner {
         p
     }
 
+    /// Returns `true` while any combo is in warmup or collection.
     pub fn is_running(&self) -> bool {
         matches!(self.state, State::Warmup { .. } | State::Collect { .. })
     }
 
+    /// Returns `true` after all combos have finished.
     pub fn is_done(&self) -> bool { matches!(self.state, State::Done) }
 
-    /// (completed_combos, total_combos, current_phase_frame, phase_target, is_warmup)
+    /// Returns `(completed_combos, total_combos, current_phase_frame, phase_target, is_warmup)`
+    /// while running; `None` when idle or done.
     pub fn progress(&self) -> Option<(usize, usize, u32, u32, bool)> {
         match &self.state {
             State::Warmup  { combo, frame, .. } =>
@@ -236,6 +260,7 @@ impl BenchmarkRunner {
         }
     }
 
+    /// Write all collected results to a CSV file at `path`.
     pub fn write_csv(&self, path: &Path) -> std::io::Result<()> {
         use std::io::Write;
         let mut f = std::fs::File::create(path)?;

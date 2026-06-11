@@ -1,9 +1,19 @@
+//! GPU simulation state and the five-pass spatial-grid compute pipeline.
+//!
+//! The pipeline runs entirely on the GPU each frame:
+//! 1. **Count** — atomically increment per-cell particle counts.
+//! 2. **Prefix** — exclusive prefix-sum to convert counts to cell offsets.
+//! 3. **Scatter** — write each particle's index into its cell slot.
+//! 4. **Reorder** — copy position/species data into cell-sorted order.
+//! 5. **Force** — compute pairwise Particle Life forces using the sorted grid.
+
+/// Maximum number of species supported by the attraction matrix and PALETTE.
 pub const MAX_SPECIES: usize = 8;
 const MAX_PARTICLES: usize = 500_000;
 // cell = r_max/2, so grid_w = floor(2/r_max); at r_max=0.01 → 200×200 = 40 000 cells.
 const MAX_GRID_CELLS: usize = 40_000;
 
-// Packed RGBA: R=bits 0-7, G=bits 8-15, B=bits 16-23
+/// Default species colours as packed `0xAA_BB_GG_RR` u32s (matches the WGSL unpack).
 pub const PALETTE: [u32; 8] = [
     0xFF3C3CDC, // red
     0xFF3CDC3C, // green
@@ -36,7 +46,12 @@ struct SimParams {
     _pad:                  [u32; 2], // pad to 64 bytes (4 × 16)
 }
 
+/// All CPU-side simulation state plus the GPU buffers and compute pipelines.
+///
+/// `app.rs` owns the single instance and calls [`dispatch`](SimulationState::dispatch)
+/// once per frame inside the wgpu command encoder.
 pub struct SimulationState {
+    /// Target particle count used on the next [`respawn`](SimulationState::respawn).
     pub particle_count: usize,
     pub species_count:  usize,
     pub r_min:           f32,
@@ -84,16 +99,21 @@ pub struct SimulationState {
     force_bind_group:   wgpu::BindGroup,
 }
 
+/// A single particle as stored in the GPU vertex + storage buffer (24 bytes).
+///
+/// The layout must exactly match the WGSL `Particle` struct in `compute.wgsl`
+/// and the vertex buffer attributes declared in `renderer.rs`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Particle {
-    pub position: [f32; 2], // offset 0
-    pub velocity: [f32; 2], // offset 8
+    pub position: [f32; 2], // offset  0
+    pub velocity: [f32; 2], // offset  8
     pub color:    u32,      // offset 16
     pub species:  u32,      // offset 20
 }
 
 impl SimulationState {
+    /// `world_width / world_height` — passed to the shader to correct for non-square worlds.
     pub fn world_aspect(&self) -> f32 {
         self.world_width / self.world_height
     }
@@ -341,7 +361,10 @@ impl SimulationState {
         sim
     }
 
-    /// Re-scatter particle positions; preserves the attraction matrix.
+    /// Scatter `particle_count` particles at random positions and upload to the GPU.
+    ///
+    /// The attraction matrix and all physics parameters are preserved.
+    /// Any particles added via [`spawn_particles`](Self::spawn_particles) are discarded.
     pub fn respawn(&mut self, queue: &wgpu::Queue) {
         let n = self.particle_count.min(MAX_PARTICLES);
         self.particles.clear();
@@ -399,7 +422,9 @@ impl SimulationState {
         self.gpu_particle_count += n;
     }
 
-    /// Run the five-pass spatial-grid force pipeline.
+    /// Submit the five-pass spatial-grid compute pipeline for this frame.
+    ///
+    /// No-ops when paused or when no particles are present.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, dt: f32) {
         if self.paused { return; }
         let n = self.gpu_particle_count;
@@ -526,6 +551,7 @@ impl SimulationState {
         }
     }
 
+    /// Restore physics parameters to their defaults without touching the attraction matrix.
     pub fn reset_params(&mut self) {
         self.r_min = 0.025;
         self.r_max = 0.08;
@@ -539,10 +565,12 @@ impl SimulationState {
         seed_attraction_biased(&mut self.rng, &mut self.attraction, self.species_count);
     }
 
+    /// The GPU buffer containing all particle data (vertex + storage).
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
         &self.particle_buf
     }
 
+    /// Number of particles currently active on the GPU, including any transiently spawned ones.
     pub fn particle_count_gpu(&self) -> u32 {
         self.gpu_particle_count
     }

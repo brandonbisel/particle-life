@@ -1,3 +1,8 @@
+//! egui panel and overlay drawing functions.
+//!
+//! All functions are stateless — they receive mutable references to the data
+//! they display and return response structs that `app.rs` acts on.
+
 use std::collections::VecDeque;
 
 use crate::{benchmark, config};
@@ -5,22 +10,32 @@ use crate::simulation::{SimulationState, MAX_SPECIES, PALETTE};
 
 // ── UI response ───────────────────────────────────────────────────────────────
 
+/// Actions requested by the main Particle Life panel.
 #[derive(Default)]
 pub struct UiResponse {
     pub respawn:       bool,
     pub randomize:     bool,
+    /// Resize world to match the current window dimensions.
     pub match_win:     bool,
-    pub apply_preset:  bool,    // apply selected_preset to sim
-    pub import_preset: bool,    // user clicked Import (caller opens dialog)
-    pub export_preset: bool,    // user clicked Export (caller opens dialog)
+    /// Apply the currently selected preset to the simulation.
+    pub apply_preset:  bool,
+    /// Open a file dialog to import a preset (caller handles the dialog).
+    pub import_preset: bool,
+    /// Open a file dialog to export a preset (caller handles the dialog).
+    pub export_preset: bool,
 }
 
+/// Actions requested by the Performance / benchmark panel.
 pub struct BenchmarkPanelResponse {
+    /// Start the full benchmark suite.
     pub start:       bool,
+    /// Export collected results to CSV.
     pub export_csv:  bool,
+    /// Start a quick single-point benchmark at the current particle count.
     pub start_quick: bool,
 }
 
+/// The active mouse tool selected in the toolbar.
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tool {
     Pan,
@@ -31,6 +46,8 @@ pub enum Tool {
     Spawn,
 }
 
+/// Draw the bottom-left toolbar: tool buttons, per-tool sliders, and spawn palette.
+///
 /// Returns `true` if the "Reset View" button was clicked.
 pub fn draw_toolbar(
     ctx: &egui::Context,
@@ -140,6 +157,7 @@ fn species_color(idx: usize) -> egui::Color32 {
     )
 }
 
+/// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border.
 pub fn draw_ui(
     ctx: &egui::Context,
     sim: &mut SimulationState,
@@ -311,8 +329,10 @@ fn world_to_screen(world: [f32; 2], center: [f32; 2], world_aspect: f32, shader_
     egui::pos2(sx, sy)
 }
 
-/// Draw a border rectangle around the simulation world [0,1]².
-/// Color reflects the active border mode: blue=wrap, amber=repel, red=static.
+/// Draw a border rectangle around the simulation world `[0,1]²`.
+///
+/// Rendered on the `Background` layer so it sits behind particles.
+/// Colour reflects the active border mode: blue = wrap, amber = repel, red = static.
 pub fn draw_world_border(
     ctx: &egui::Context,
     camera_center: [f32; 2],
@@ -342,9 +362,10 @@ pub fn draw_world_border(
     );
 }
 
-/// Draw a circle around the cursor showing the active tool's range.
-/// For Attract/Repel, also draws a radial gradient fill that approximates the
-/// quadratic force falloff. Only shown for tools that use a range.
+/// Draw a brush-size circle around the cursor for range-based tools.
+///
+/// Attract/Repel also render a radial gradient fill approximating the quadratic
+/// force falloff.  No-ops for Pan, ZoomIn, and ZoomOut.
 pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, shader_zoom: f32) {
     if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
         return;
@@ -383,6 +404,10 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, s
     painter.circle_stroke(cursor, screen_radius, egui::Stroke::new(1.5, border));
 }
 
+/// Draw the top-right Performance panel with live FPS stats, Quick Bench, and the Suite Benchmark.
+///
+/// The window starts collapsed; the benchmark sub-sections are inside a
+/// [`CollapsingHeader`](egui::CollapsingHeader) so they don't clutter the default view.
 pub fn draw_perf_overlay(
     ctx: &egui::Context,
     frame_times: &VecDeque<f32>,

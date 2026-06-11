@@ -1,3 +1,10 @@
+//! Particle Life — a GPU-accelerated emergence simulator.
+//!
+//! Particles of different species attract or repel each other according to a
+//! configurable interaction matrix, producing spontaneous flocking, clustering,
+//! and predator-prey dynamics.  All force integration runs on the GPU via a
+//! five-pass spatial-grid wgpu compute pipeline.
+
 mod app;
 mod benchmark;
 mod config;
