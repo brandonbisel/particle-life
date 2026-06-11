@@ -171,6 +171,9 @@ impl ApplicationHandler for AppHandler {
         let fit_zoom = compute_fit_zoom(world_width, world_height, size.width, size.height);
 
         let egui_ctx = egui::Context::default();
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        egui_ctx.set_fonts(fonts);
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
             egui::ViewportId::ROOT,

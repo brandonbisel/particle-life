@@ -61,15 +61,16 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 
 ## Dependencies
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `wgpu` | 24 | GPU compute + rendering (Vulkan backend) |
-| `winit` | 0.30 | Window management (`ApplicationHandler` API) |
-| `egui` + `egui-winit` + `egui-wgpu` | 0.31 | Immediate-mode UI overlay |
-| `bytemuck` | 1 | Safe Pod casts for GPU buffer uploads |
-| `pollster` | 0.3 | Block on async wgpu initialization |
-| `serde` + `toml` | 1 / 0.8 | Preset serialisation |
-| `rfd` | 0.15 | Native file dialogs for import/export |
+| Crate                                | Version | Purpose                                      |
+|--------------------------------------|---------|----------------------------------------------|
+| `wgpu`                               | 24      | GPU compute + rendering (Vulkan backend)     |
+| `winit`                              | 0.30    | Window management (`ApplicationHandler` API) |
+| `egui` + `egui-winit` + `egui-wgpu`  | 0.31    | Immediate-mode UI overlay                    |
+| `egui-phosphor`                      | 0.9     | Phosphor icon font for the toolbar (MIT)     |
+| `bytemuck`                           | 1       | Safe Pod casts for GPU buffer uploads        |
+| `pollster`                           | 0.3     | Block on async wgpu initialization           |
+| `serde` + `toml`                     | 1 / 0.8 | Preset serialisation                         |
+| `rfd`                                | 0.15    | Native file dialogs for import/export        |
 
 ## Controls
 

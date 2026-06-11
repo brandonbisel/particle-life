@@ -8,6 +8,8 @@ use std::collections::VecDeque;
 use crate::simulation::{MAX_SPECIES, PALETTE, SimulationState};
 use crate::{benchmark, config};
 
+use egui_phosphor::regular as ph;
+
 // ── UI response ───────────────────────────────────────────────────────────────
 
 /// Actions requested by the main Particle Life panel.
@@ -60,150 +62,168 @@ pub fn draw_toolbar(
     spawn_rate: &mut u32,
     n_species: usize,
 ) -> bool {
-    let mut reset_view = false;
-
-    egui::Window::new("Tools")
+    // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
+    let response = egui::Area::new(egui::Id::new("toolbar"))
         .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
-        .title_bar(false)
-        .resizable(false)
-        .collapsible(false)
-        .min_width(0.0)
+        .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            ui.set_min_width(0.0);
-            let icon_sz = egui::Vec2::splat(32.0);
+            egui::Frame::window(ui.style())
+                .show(ui, |ui| {
+                    let mut rv = false;
+                    let icon_sz = egui::Vec2::splat(32.0);
 
-            let r = ui
-                .add_sized(icon_sz, egui::SelectableLabel::new(*tool == Tool::Pan, "↔"))
-                .on_hover_text("Pan — drag to move the camera");
-            if r.clicked() {
-                *tool = Tool::Pan;
-            }
+                    let r = ui
+                        .add_sized(
+                            icon_sz,
+                            egui::SelectableLabel::new(*tool == Tool::Pan, ph::HAND_GRABBING),
+                        )
+                        .on_hover_text("Pan — drag to move the camera");
+                    if r.clicked() {
+                        *tool = Tool::Pan;
+                    }
 
-            let r = ui
-                .add_sized(
-                    icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::ZoomIn, "+"),
-                )
-                .on_hover_text("Zoom In — click to zoom in centered on the cursor");
-            if r.clicked() {
-                *tool = Tool::ZoomIn;
-            }
+                    let r = ui
+                        .add_sized(
+                            icon_sz,
+                            egui::SelectableLabel::new(
+                                *tool == Tool::ZoomIn,
+                                ph::MAGNIFYING_GLASS_PLUS,
+                            ),
+                        )
+                        .on_hover_text("Zoom In — click to zoom in centered on the cursor");
+                    if r.clicked() {
+                        *tool = Tool::ZoomIn;
+                    }
 
-            let r = ui
-                .add_sized(
-                    icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::ZoomOut, "−"),
-                )
-                .on_hover_text("Zoom Out — click to zoom out centered on the cursor");
-            if r.clicked() {
-                *tool = Tool::ZoomOut;
-            }
+                    let r = ui
+                        .add_sized(
+                            icon_sz,
+                            egui::SelectableLabel::new(
+                                *tool == Tool::ZoomOut,
+                                ph::MAGNIFYING_GLASS_MINUS,
+                            ),
+                        )
+                        .on_hover_text("Zoom Out — click to zoom out centered on the cursor");
+                    if r.clicked() {
+                        *tool = Tool::ZoomOut;
+                    }
 
-            let r = ui
-                .add_sized(
-                    icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::Attract, "◎"),
-                )
-                .on_hover_text("Attract — hold to pull nearby particles toward the cursor");
-            if r.clicked() {
-                *tool = Tool::Attract;
-            }
+                    let r = ui
+                        .add_sized(
+                            icon_sz,
+                            egui::SelectableLabel::new(*tool == Tool::Attract, ph::MAGNET),
+                        )
+                        .on_hover_text("Attract — hold to pull nearby particles toward the cursor");
+                    if r.clicked() {
+                        *tool = Tool::Attract;
+                    }
 
-            let r = ui
-                .add_sized(
-                    icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::Repel, "⊗"),
-                )
-                .on_hover_text("Repel — hold to push nearby particles away from the cursor");
-            if r.clicked() {
-                *tool = Tool::Repel;
-            }
+                    let r = ui
+                        .add_sized(
+                            icon_sz,
+                            egui::SelectableLabel::new(
+                                *tool == Tool::Repel,
+                                ph::ARROWS_OUT_CARDINAL,
+                            ),
+                        )
+                        .on_hover_text(
+                            "Repel — hold to push nearby particles away from the cursor",
+                        );
+                    if r.clicked() {
+                        *tool = Tool::Repel;
+                    }
 
-            let r = ui
-                .add_sized(
-                    icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::Spawn, "●"),
-                )
-                .on_hover_text("Spawn — hold to emit new particles at the cursor");
-            if r.clicked() {
-                *tool = Tool::Spawn;
-            }
+                    let r = ui
+                        .add_sized(
+                            icon_sz,
+                            egui::SelectableLabel::new(*tool == Tool::Spawn, ph::SPARKLE),
+                        )
+                        .on_hover_text("Spawn — hold to emit new particles at the cursor");
+                    if r.clicked() {
+                        *tool = Tool::Spawn;
+                    }
 
-            ui.separator();
-
-            if ui
-                .add_sized(icon_sz, egui::Button::new("↺"))
-                .on_hover_text("Reset view to default zoom and position")
-                .clicked()
-            {
-                reset_view = true;
-            }
-
-            match *tool {
-                Tool::Attract | Tool::Repel => {
                     ui.separator();
-                    ui.add(
-                        egui::Slider::new(tool_range, 0.02..=0.4)
-                            .text("Range")
-                            .step_by(0.01),
-                    )
-                    .on_hover_text("Radius of the mouse influence zone");
-                    ui.add(
-                        egui::Slider::new(mouse_strength, 0.1..=10.0)
-                            .text("Strength")
-                            .step_by(0.1),
-                    )
-                    .on_hover_text("How strongly the tool affects nearby particles");
-                }
-                Tool::Spawn => {
-                    ui.separator();
-                    ui.add(
-                        egui::Slider::new(tool_range, 0.01..=0.3)
-                            .text("Radius")
-                            .step_by(0.005),
-                    )
-                    .on_hover_text("Radius of the spawn zone around the cursor");
-                    ui.add(
-                        egui::Slider::new(spawn_rate, 1..=500)
-                            .text("Rate (per frame)")
-                            .logarithmic(true),
-                    )
-                    .on_hover_text("Number of particles spawned per frame while holding");
-                    ui.separator();
-                    ui.horizontal_wrapped(|ui| {
-                        let any_sel = spawn_species.is_none();
-                        if ui
-                            .selectable_label(any_sel, "Any")
-                            .on_hover_text("Spawn a random species")
-                            .clicked()
-                        {
-                            *spawn_species = None;
+
+                    if ui
+                        .add_sized(icon_sz, egui::Button::new(ph::ARROWS_COUNTER_CLOCKWISE))
+                        .on_hover_text("Reset view to default zoom and position")
+                        .clicked()
+                    {
+                        rv = true;
+                    }
+
+                    match *tool {
+                        Tool::Attract | Tool::Repel => {
+                            ui.separator();
+                            ui.add(
+                                egui::Slider::new(tool_range, 0.02..=0.4)
+                                    .text("Range")
+                                    .step_by(0.01),
+                            )
+                            .on_hover_text("Radius of the mouse influence zone");
+                            ui.add(
+                                egui::Slider::new(mouse_strength, 0.1..=10.0)
+                                    .text("Strength")
+                                    .step_by(0.1),
+                            )
+                            .on_hover_text("How strongly the tool affects nearby particles");
                         }
-                        for i in 0..n_species {
-                            let color = species_color(i);
-                            let is_sel = *spawn_species == Some(i);
-                            let (rect, resp) = ui
-                                .allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::click());
-                            ui.painter().rect_filled(rect, 3.0, color);
-                            if is_sel {
-                                ui.painter().rect_stroke(
-                                    rect,
-                                    egui::CornerRadius::same(3),
-                                    egui::Stroke::new(2.0, egui::Color32::WHITE),
-                                    egui::StrokeKind::Outside,
-                                );
-                            }
-                            if resp.clicked() {
-                                *spawn_species = Some(i);
-                            }
+                        Tool::Spawn => {
+                            ui.separator();
+                            ui.add(
+                                egui::Slider::new(tool_range, 0.01..=0.3)
+                                    .text("Radius")
+                                    .step_by(0.005),
+                            )
+                            .on_hover_text("Radius of the spawn zone around the cursor");
+                            ui.add(
+                                egui::Slider::new(spawn_rate, 1..=500)
+                                    .text("Rate (per frame)")
+                                    .logarithmic(true),
+                            )
+                            .on_hover_text("Number of particles spawned per frame while holding");
+                            ui.separator();
+                            ui.horizontal_wrapped(|ui| {
+                                let any_sel = spawn_species.is_none();
+                                if ui
+                                    .selectable_label(any_sel, "Any")
+                                    .on_hover_text("Spawn a random species")
+                                    .clicked()
+                                {
+                                    *spawn_species = None;
+                                }
+                                for i in 0..n_species {
+                                    let color = species_color(i);
+                                    let is_sel = *spawn_species == Some(i);
+                                    let (rect, resp) = ui.allocate_exact_size(
+                                        egui::Vec2::splat(22.0),
+                                        egui::Sense::click(),
+                                    );
+                                    ui.painter().rect_filled(rect, 3.0, color);
+                                    if is_sel {
+                                        ui.painter().rect_stroke(
+                                            rect,
+                                            egui::CornerRadius::same(3),
+                                            egui::Stroke::new(2.0, egui::Color32::WHITE),
+                                            egui::StrokeKind::Outside,
+                                        );
+                                    }
+                                    if resp.clicked() {
+                                        *spawn_species = Some(i);
+                                    }
+                                }
+                            });
                         }
-                    });
-                }
-                _ => {}
-            }
+                        _ => {}
+                    }
+
+                    rv
+                })
+                .inner
         });
 
-    reset_view
+    response.inner
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
