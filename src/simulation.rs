@@ -452,7 +452,7 @@ impl SimulationState {
         // Clear cell counts to 0 before the count pass.
         encoder.clear_buffer(&self.cell_counts_buf, 0, None);
 
-        let workgroups = (n + 63) / 64;
+        let workgroups = n.div_ceil(64);
 
         {
             let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {

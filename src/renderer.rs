@@ -217,6 +217,7 @@ impl WgpuState {
         );
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         paint_jobs: &[egui::ClippedPrimitive],

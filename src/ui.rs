@@ -151,7 +151,7 @@ fn attraction_cell_color(v: f32) -> egui::Color32 {
 fn species_color(idx: usize) -> egui::Color32 {
     let packed = PALETTE[idx];
     egui::Color32::from_rgb(
-        ((packed >> 0) & 0xFF) as u8,
+        (packed & 0xFF) as u8,
         ((packed >> 8) & 0xFF) as u8,
         ((packed >> 16) & 0xFF) as u8,
     )
@@ -259,10 +259,10 @@ pub fn draw_ui(
                                 ui.selectable_value(selected_preset, i, &preset.name);
                             }
                         });
-                    if let Some(p) = presets.get(*selected_preset) {
-                        if !p.description.is_empty() {
-                            ui.label(egui::RichText::new(&p.description).weak());
-                        }
+                    if let Some(p) = presets.get(*selected_preset)
+                        && !p.description.is_empty()
+                    {
+                        ui.label(egui::RichText::new(&p.description).weak());
                     }
                     ui.horizontal(|ui| {
                         if ui.button("Apply").clicked()   { resp.apply_preset  = true; }

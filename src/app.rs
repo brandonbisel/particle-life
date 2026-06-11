@@ -71,14 +71,9 @@ fn apply_zoom(cam: &mut Camera, cursor_world: [f32; 2], factor: f32) {
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
+#[derive(Default)]
 pub struct AppHandler {
     state: Option<AppState>,
-}
-
-impl Default for AppHandler {
-    fn default() -> Self {
-        Self { state: None }
-    }
 }
 
 struct AppState {
@@ -456,39 +451,36 @@ impl ApplicationHandler for AppHandler {
                         sz.width, sz.height,
                     );
                 }
-                if ui_resp.apply_preset {
-                    if let Some(preset) = state.preset_library.get(state.selected_preset).cloned() {
-                        state.sim.apply_preset(state.renderer.queue(), &preset);
-                        state.fit_zoom = compute_fit_zoom(
-                            state.sim.world_width, state.sim.world_height,
-                            window.inner_size().width, window.inner_size().height,
-                        );
-                    }
+                if ui_resp.apply_preset
+                    && let Some(preset) = state.preset_library.get(state.selected_preset).cloned()
+                {
+                    state.sim.apply_preset(state.renderer.queue(), &preset);
+                    state.fit_zoom = compute_fit_zoom(
+                        state.sim.world_width, state.sim.world_height,
+                        window.inner_size().width, window.inner_size().height,
+                    );
                 }
-                if ui_resp.import_preset {
-                    if let Some(path) = rfd::FileDialog::new()
+                if ui_resp.import_preset
+                    && let Some(path) = rfd::FileDialog::new()
                         .add_filter("TOML preset", &["toml"])
                         .pick_file()
-                    {
-                        match config::load_preset_file(&path) {
-                            Ok(preset) => {
-                                state.preset_library.push(preset);
-                                state.selected_preset = state.preset_library.len() - 1;
-                            }
-                            Err(e) => log::warn!("Import failed: {e}"),
+                {
+                    match config::load_preset_file(&path) {
+                        Ok(preset) => {
+                            state.preset_library.push(preset);
+                            state.selected_preset = state.preset_library.len() - 1;
                         }
+                        Err(e) => log::warn!("Import failed: {e}"),
                     }
                 }
-                if ui_resp.export_preset {
-                    if let Some(path) = rfd::FileDialog::new()
+                if ui_resp.export_preset
+                    && let Some(path) = rfd::FileDialog::new()
                         .add_filter("TOML preset", &["toml"])
                         .set_file_name("preset.toml")
                         .save_file()
-                    {
-                        if let Err(e) = config::save_preset_file(&state.sim.to_preset("exported"), &path) {
-                            log::warn!("Export failed: {e}");
-                        }
-                    }
+                    && let Err(e) = config::save_preset_file(&state.sim.to_preset("exported"), &path)
+                {
+                    log::warn!("Export failed: {e}");
                 }
 
                 // Benchmark
@@ -497,16 +489,14 @@ impl ApplicationHandler for AppHandler {
                     let action = state.benchmark.start(sz.width, sz.height);
                     Self::handle_benchmark_action(&mut state.sim, &state.renderer, action, &state.benchmark);
                 }
-                if bench_resp.export_csv {
-                    if let Some(path) = rfd::FileDialog::new()
+                if bench_resp.export_csv
+                    && let Some(path) = rfd::FileDialog::new()
                         .add_filter("CSV", &["csv"])
                         .set_file_name("benchmark.csv")
                         .save_file()
-                    {
-                        if let Err(e) = state.benchmark.write_csv(&path) {
-                            log::warn!("Benchmark CSV export failed: {e}");
-                        }
-                    }
+                    && let Err(e) = state.benchmark.write_csv(&path)
+                {
+                    log::warn!("Benchmark CSV export failed: {e}");
                 }
                 if state.benchmark.is_running() {
                     let action = state.benchmark.advance(dt);
