@@ -48,7 +48,7 @@ pub enum Tool {
     Spawn,
 }
 
-/// Draw the bottom-left toolbar: tool buttons, per-tool sliders, and spawn palette.
+/// Draw the right-side vertical toolbar: icon tool buttons, per-tool sliders, and spawn palette.
 ///
 /// Returns `true` if the "Reset View" button was clicked.
 pub fn draw_toolbar(
@@ -63,50 +63,117 @@ pub fn draw_toolbar(
     let mut reset_view = false;
 
     egui::Window::new("Tools")
-        .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
+        .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
         .resizable(false)
         .collapsible(false)
         .show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(tool, Tool::Pan, "Pan");
-                ui.selectable_value(tool, Tool::ZoomIn, "Zoom +");
-                ui.selectable_value(tool, Tool::ZoomOut, "Zoom -");
-                ui.selectable_value(tool, Tool::Attract, "Attract");
-                ui.selectable_value(tool, Tool::Repel, "Repel");
-                ui.selectable_value(tool, Tool::Spawn, "Spawn");
-                ui.separator();
-                if ui.button("Reset View").clicked() {
-                    reset_view = true;
-                }
-            });
+            let icon_sz = egui::Vec2::splat(32.0);
+
+            let r = ui
+                .add_sized(icon_sz, egui::SelectableLabel::new(*tool == Tool::Pan, "↔"))
+                .on_hover_text("Pan — drag to move the camera");
+            if r.clicked() {
+                *tool = Tool::Pan;
+            }
+
+            let r = ui
+                .add_sized(
+                    icon_sz,
+                    egui::SelectableLabel::new(*tool == Tool::ZoomIn, "⊕"),
+                )
+                .on_hover_text("Zoom In — click to zoom in centered on the cursor");
+            if r.clicked() {
+                *tool = Tool::ZoomIn;
+            }
+
+            let r = ui
+                .add_sized(
+                    icon_sz,
+                    egui::SelectableLabel::new(*tool == Tool::ZoomOut, "⊖"),
+                )
+                .on_hover_text("Zoom Out — click to zoom out centered on the cursor");
+            if r.clicked() {
+                *tool = Tool::ZoomOut;
+            }
+
+            let r = ui
+                .add_sized(
+                    icon_sz,
+                    egui::SelectableLabel::new(*tool == Tool::Attract, "◎"),
+                )
+                .on_hover_text("Attract — hold to pull nearby particles toward the cursor");
+            if r.clicked() {
+                *tool = Tool::Attract;
+            }
+
+            let r = ui
+                .add_sized(
+                    icon_sz,
+                    egui::SelectableLabel::new(*tool == Tool::Repel, "⊗"),
+                )
+                .on_hover_text("Repel — hold to push nearby particles away from the cursor");
+            if r.clicked() {
+                *tool = Tool::Repel;
+            }
+
+            let r = ui
+                .add_sized(
+                    icon_sz,
+                    egui::SelectableLabel::new(*tool == Tool::Spawn, "✦"),
+                )
+                .on_hover_text("Spawn — hold to emit new particles at the cursor");
+            if r.clicked() {
+                *tool = Tool::Spawn;
+            }
+
+            ui.separator();
+
+            if ui
+                .add_sized(icon_sz, egui::Button::new("⌂"))
+                .on_hover_text("Reset view to default zoom and position")
+                .clicked()
+            {
+                reset_view = true;
+            }
+
             match *tool {
                 Tool::Attract | Tool::Repel => {
+                    ui.separator();
                     ui.add(
                         egui::Slider::new(tool_range, 0.02..=0.4)
                             .text("Range")
                             .step_by(0.01),
-                    );
+                    )
+                    .on_hover_text("Radius of the mouse influence zone");
                     ui.add(
                         egui::Slider::new(mouse_strength, 0.1..=10.0)
                             .text("Strength")
                             .step_by(0.1),
-                    );
+                    )
+                    .on_hover_text("How strongly the tool affects nearby particles");
                 }
                 Tool::Spawn => {
+                    ui.separator();
                     ui.add(
                         egui::Slider::new(tool_range, 0.01..=0.3)
                             .text("Radius")
                             .step_by(0.005),
-                    );
+                    )
+                    .on_hover_text("Radius of the spawn zone around the cursor");
                     ui.add(
                         egui::Slider::new(spawn_rate, 1..=500)
                             .text("Rate (per frame)")
                             .logarithmic(true),
-                    );
-                    // Species color palette
+                    )
+                    .on_hover_text("Number of particles spawned per frame while holding");
+                    ui.separator();
                     ui.horizontal_wrapped(|ui| {
                         let any_sel = spawn_species.is_none();
-                        if ui.selectable_label(any_sel, "Any").clicked() {
+                        if ui
+                            .selectable_label(any_sel, "Any")
+                            .on_hover_text("Spawn a random species")
+                            .clicked()
+                        {
                             *spawn_species = None;
                         }
                         for i in 0..n_species {
@@ -169,25 +236,40 @@ pub fn draw_ui(
     let mut resp = UiResponse::default();
 
     egui::Window::new("Particle Life")
-        .default_pos([10.0, 10.0])
+        .anchor(egui::Align2::LEFT_TOP, [10.0, 10.0])
         .show(ctx, |ui| {
             ui.add(
                 egui::Slider::new(&mut sim.particle_count, 100..=500_000)
                     .text("Particles")
                     .logarithmic(true),
-            );
-            ui.add(egui::Slider::new(&mut sim.species_count, 2..=8).text("Species"));
+            )
+            .on_hover_text("Total number of particles — respawn required to take effect");
+            ui.add(egui::Slider::new(&mut sim.species_count, 2..=8).text("Species"))
+                .on_hover_text(
+                    "Number of distinct species — each has a unique color and interaction profile; respawn required",
+                );
             ui.add(
                 egui::Slider::new(&mut sim.particle_radius, 0.5_f32..=12.0_f32)
                     .text("Radius")
                     .step_by(0.5),
-            );
+            )
+            .on_hover_text("Visual rendering radius of each particle in pixels");
             ui.horizontal(|ui| {
-                if ui.button("Respawn").clicked() {
+                if ui
+                    .button("Respawn")
+                    .on_hover_text(
+                        "Scatter all particles at random positions; preserves the attraction matrix",
+                    )
+                    .clicked()
+                {
                     resp.respawn = true;
                 }
                 let pause_label = if sim.paused { "Resume" } else { "Pause" };
-                if ui.button(pause_label).clicked() {
+                if ui
+                    .button(pause_label)
+                    .on_hover_text("Pause or resume the simulation")
+                    .clicked()
+                {
                     sim.paused = !sim.paused;
                 }
             });
@@ -201,14 +283,20 @@ pub fn draw_ui(
                         .speed(10.0)
                         .range(100.0..=10000.0)
                         .prefix("W: "),
-                );
+                )
+                .on_hover_text("World width in simulation units");
                 ui.add(
                     egui::DragValue::new(&mut sim.world_height)
                         .speed(10.0)
                         .range(100.0..=10000.0)
                         .prefix("H: "),
-                );
-                if ui.button("Match Window").clicked() {
+                )
+                .on_hover_text("World height in simulation units");
+                if ui
+                    .button("Match Window")
+                    .on_hover_text("Resize the world to match the current window aspect ratio")
+                    .clicked()
+                {
                     resp.match_win = true;
                 }
             });
@@ -219,23 +307,39 @@ pub fn draw_ui(
                 egui::Slider::new(&mut sim.r_min, 0.001_f32..=0.1_f32)
                     .text("r_min")
                     .step_by(0.001),
+            )
+            .on_hover_text(
+                "Hard-core repulsion radius — particles closer than this always repel each other, regardless of species",
             );
             ui.add(
                 egui::Slider::new(&mut sim.r_max, 0.01_f32..=0.3_f32)
                     .text("r_max")
                     .step_by(0.005),
+            )
+            .on_hover_text(
+                "Maximum interaction distance — particles beyond this range are invisible to each other",
             );
             ui.add(
                 egui::Slider::new(&mut sim.friction, 0.0_f32..=5.0_f32)
                     .text("Friction")
                     .step_by(0.05),
+            )
+            .on_hover_text(
+                "Velocity decay rate — velocity half-life ≈ ln(2)/friction (≈1.4s at default 0.5)",
             );
             ui.add(
                 egui::Slider::new(&mut sim.force_scale, 0.0001_f32..=0.05_f32)
                     .text("Force")
                     .step_by(0.0001),
-            );
-            if ui.button("Reset Defaults").clicked() {
+            )
+            .on_hover_text("Global multiplier for all attraction and repulsion forces");
+            if ui
+                .button("Reset Defaults")
+                .on_hover_text(
+                    "Restore r_min, r_max, friction, and force_scale to their default values",
+                )
+                .clicked()
+            {
                 sim.reset_params();
             }
 
@@ -243,16 +347,22 @@ pub fn draw_ui(
 
             ui.horizontal(|ui| {
                 ui.label("Border:");
-                ui.radio_value(&mut sim.border_mode, 0u32, "Wrap");
-                ui.radio_value(&mut sim.border_mode, 1u32, "Repel");
-                ui.radio_value(&mut sim.border_mode, 2u32, "Static");
+                ui.radio_value(&mut sim.border_mode, 0u32, "Wrap")
+                    .on_hover_text(
+                        "Wrap — particles that leave one edge reappear on the opposite side (torus)",
+                    );
+                ui.radio_value(&mut sim.border_mode, 1u32, "Repel")
+                    .on_hover_text("Repel — particles are pushed back from the world boundary");
+                ui.radio_value(&mut sim.border_mode, 2u32, "Static")
+                    .on_hover_text("Static — particles stop at the world boundary (hard wall)");
             });
             if sim.border_mode == 1 {
                 ui.add(
                     egui::Slider::new(&mut sim.border_repel_strength, 0.1..=30.0)
                         .text("Repel Force")
                         .step_by(0.1),
-                );
+                )
+                .on_hover_text("Strength of the boundary repulsion spring");
             }
 
             ui.separator();
@@ -277,13 +387,25 @@ pub fn draw_ui(
                         ui.label(egui::RichText::new(&p.description).weak());
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Apply").clicked() {
+                        if ui
+                            .button("Apply")
+                            .on_hover_text("Apply the selected preset to the simulation")
+                            .clicked()
+                        {
                             resp.apply_preset = true;
                         }
-                        if ui.button("Import…").clicked() {
+                        if ui
+                            .button("Import…")
+                            .on_hover_text("Load a preset from a TOML file")
+                            .clicked()
+                        {
                             resp.import_preset = true;
                         }
-                        if ui.button("Export…").clicked() {
+                        if ui
+                            .button("Export…")
+                            .on_hover_text("Save the current simulation state as a TOML preset file")
+                            .clicked()
+                        {
                             resp.export_preset = true;
                         }
                     });
@@ -294,7 +416,13 @@ pub fn draw_ui(
             egui::CollapsingHeader::new("Attraction Matrix")
                 .default_open(true)
                 .show(ui, |ui| {
-                    if ui.button("Randomize Matrix").clicked() {
+                    if ui
+                        .button("Randomize Matrix")
+                        .on_hover_text(
+                            "Fill the attraction matrix with random values; particles are not moved",
+                        )
+                        .clicked()
+                    {
                         resp.randomize = true;
                     }
 
@@ -465,7 +593,7 @@ pub fn draw_perf_overlay(
     let density = sim.particle_count as f32 / n_cells as f32;
 
     egui::Window::new("Performance")
-        .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
+        .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
         .resizable(false)
         .collapsible(true)
         .default_open(false)
@@ -476,7 +604,8 @@ pub fn draw_perf_overlay(
                 .striped(true)
                 .min_col_width(60.0)
                 .show(ui, |ui| {
-                    ui.label("FPS");
+                    ui.label("FPS")
+                        .on_hover_text("Current and average frames per second");
                     ui.label(format!(
                         "{:>5.0}  avg {:>5.0}",
                         1.0 / latest_dt,
@@ -484,7 +613,8 @@ pub fn draw_perf_overlay(
                     ));
                     ui.end_row();
 
-                    ui.label("Frame");
+                    ui.label("Frame")
+                        .on_hover_text("Current frame time with min/max over the sample window");
                     ui.label(format!(
                         "{:>5.1} ms  ({:>5.1}–{:>5.1})",
                         latest_dt * 1000.0,
@@ -493,11 +623,14 @@ pub fn draw_perf_overlay(
                     ));
                     ui.end_row();
 
-                    ui.label("Particles");
+                    ui.label("Particles")
+                        .on_hover_text("Number of particles currently allocated on the GPU");
                     ui.label(format!("{}", sim.particle_count_gpu()));
                     ui.end_row();
 
-                    ui.label("Grid");
+                    ui.label("Grid").on_hover_text(
+                        "Spatial grid cell count and average particles per cell (cell size = r_max/2)",
+                    );
                     ui.label(format!("{n_cells} cells  {density:.0} avg/cell"));
                     ui.end_row();
                 });
@@ -507,11 +640,18 @@ pub fn draw_perf_overlay(
             // Global vsync toggle (Quick Bench follows this setting)
             if vsync_available {
                 let mut vsync_val = vsync;
-                if ui.checkbox(&mut vsync_val, "VSync").changed() {
+                if ui
+                    .checkbox(&mut vsync_val, "VSync")
+                    .on_hover_text(
+                        "Lock frame rate to the monitor refresh rate; Quick Bench follows this setting",
+                    )
+                    .changed()
+                {
                     resp.vsync = Some(vsync_val);
                 }
             } else {
-                ui.add_enabled(false, egui::Checkbox::new(&mut true, "VSync (unavailable)"));
+                ui.add_enabled(false, egui::Checkbox::new(&mut true, "VSync (unavailable)"))
+                    .on_hover_text("VSync toggle requires PresentMode::Immediate support from the adapter");
             }
 
             ui.separator();
@@ -537,13 +677,21 @@ pub fn draw_perf_overlay(
                         ui.label(format!("{max:.0}"));
                         ui.end_row();
                     });
-                if ui.button("Run Again").clicked() {
+                if ui
+                    .button("Run Again")
+                    .on_hover_text("Re-run the quick benchmark at the current particle count")
+                    .clicked()
+                {
                     resp.start_quick = true;
                 }
-            } else {
-                if ui.button("Quick Bench").clicked() {
-                    resp.start_quick = true;
-                }
+            } else if ui
+                .button("Quick Bench")
+                .on_hover_text(
+                    "Measure average FPS at the current particle count (short warmup + collection run)",
+                )
+                .clicked()
+            {
+                resp.start_quick = true;
             }
 
             ui.separator();
@@ -554,10 +702,14 @@ pub fn draw_perf_overlay(
                 .show(ui, |ui| {
                     // Vsync toggle for suite runs; disabled while a run is in progress
                     let mut suite_vsync = !runner.vsync_off;
-                    let cb = ui.add_enabled(
-                        !runner.is_running(),
-                        egui::Checkbox::new(&mut suite_vsync, "VSync during suite"),
-                    );
+                    let cb = ui
+                        .add_enabled(
+                            !runner.is_running(),
+                            egui::Checkbox::new(&mut suite_vsync, "VSync during suite"),
+                        )
+                        .on_hover_text(
+                            "Run the suite with VSync on; default is off for accurate throughput numbers",
+                        );
                     if cb.changed() {
                         runner.vsync_off = !suite_vsync;
                     }
@@ -577,7 +729,11 @@ pub fn draw_perf_overlay(
                         }
                     } else if runner.is_done() {
                         ui.label(format!("{} results ready", runner.results.len()));
-                        if ui.button("Export CSV…").clicked() {
+                        if ui
+                            .button("Export CSV…")
+                            .on_hover_text("Save benchmark results to a CSV file")
+                            .clicked()
+                        {
                             resp.export_csv = true;
                         }
                     } else {
@@ -586,7 +742,13 @@ pub fn draw_perf_overlay(
                             benchmark::BenchmarkRunner::num_combos(),
                             benchmark::BENCHMARK_TIERS.len(),
                         ));
-                        if ui.button("Start Suite").clicked() {
+                        if ui
+                            .button("Start Suite")
+                            .on_hover_text(
+                                "Run all preset × particle-count combinations (5s warmup + 15s collection each)",
+                            )
+                            .clicked()
+                        {
                             resp.start = true;
                         }
                     }
