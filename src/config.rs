@@ -188,3 +188,69 @@ pub fn save_session(preset: &Preset) {
 pub fn load_session() -> Option<Preset> {
     load_preset_file(Path::new(SESSION_PATH)).ok()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_preset_invariants(p: &Preset) {
+        assert!(p.r_min > 0.0, "{}: r_min must be positive", p.name);
+        assert!(p.r_max > p.r_min, "{}: r_max must exceed r_min", p.name);
+        assert!(p.friction >= 0.0, "{}: friction must be non-negative", p.name);
+        assert!(p.force_scale > 0.0, "{}: force_scale must be positive", p.name);
+        assert!(
+            p.species_count >= 1 && p.species_count <= 8,
+            "{}: species_count {} out of range [1, 8]",
+            p.name,
+            p.species_count
+        );
+        assert_eq!(
+            p.attraction.len(),
+            p.species_count * p.species_count,
+            "{}: attraction matrix length {} != species_count² {}",
+            p.name,
+            p.attraction.len(),
+            p.species_count * p.species_count
+        );
+        assert!(p.world_width > 0.0, "{}: world_width must be positive", p.name);
+        assert!(p.world_height > 0.0, "{}: world_height must be positive", p.name);
+    }
+
+    #[test]
+    fn builtin_presets_are_valid() {
+        for preset in builtin_presets() {
+            assert_preset_invariants(&preset);
+        }
+    }
+
+    #[test]
+    fn preset_round_trips_via_toml() {
+        for preset in builtin_presets() {
+            let serialized = toml::to_string_pretty(&preset).expect("serialize failed");
+            let restored: Preset = toml::from_str(&serialized).expect("deserialize failed");
+
+            assert_eq!(restored.name, preset.name);
+            assert_eq!(restored.particle_count, preset.particle_count);
+            assert_eq!(restored.species_count, preset.species_count);
+            assert_eq!(restored.border_mode, preset.border_mode);
+            assert_eq!(
+                restored.attraction.len(),
+                preset.attraction.len(),
+                "{}: attraction length changed after round-trip",
+                preset.name
+            );
+            for (i, (a, b)) in restored
+                .attraction
+                .iter()
+                .zip(preset.attraction.iter())
+                .enumerate()
+            {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "{}: attraction[{i}] {a} != {b} after round-trip",
+                    preset.name
+                );
+            }
+        }
+    }
+}

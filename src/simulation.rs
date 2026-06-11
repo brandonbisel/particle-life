@@ -745,3 +745,29 @@ impl Rng {
         lo + self.next_f32() * (hi - lo)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem;
+
+    #[test]
+    fn sim_params_is_64_bytes() {
+        assert_eq!(mem::size_of::<SimParams>(), 64);
+    }
+
+    #[test]
+    fn particle_is_24_bytes() {
+        assert_eq!(mem::size_of::<Particle>(), 24);
+    }
+
+    // The vertex shader in renderer.rs hardcodes these byte offsets.
+    // If they drift the sim renders garbage with no compile error.
+    #[test]
+    fn particle_field_offsets() {
+        assert_eq!(mem::offset_of!(Particle, position), 0);
+        assert_eq!(mem::offset_of!(Particle, velocity), 8);
+        assert_eq!(mem::offset_of!(Particle, color), 16);
+        assert_eq!(mem::offset_of!(Particle, species), 20);
+    }
+}
