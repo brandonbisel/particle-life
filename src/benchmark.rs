@@ -10,10 +10,12 @@ use crate::config::{Preset, builtin_presets};
 /// Particle counts used in each tier of the full benchmark suite.
 pub const BENCHMARK_TIERS: [usize; 4] = [10_000, 50_000, 100_000, 500_000];
 const BUILTIN_COUNT: usize = 4;
-const WARMUP_FRAMES: u32 = 300; // ~2s at 165fps, ~7s at 44fps — enough to let structures form
-const TARGET_FRAMES: usize = 300;
-const WALL_CAP_SECS: f64 = 60.0; // bumped slightly to accommodate longer warmup at low fps
-const GLOBAL_CAP_SECS: f64 = 600.0;
+// Time-based targets: physics are dt-driven so wall-clock seconds = simulation seconds.
+// 5s warmup lets friction decay initial conditions (~3.6 half-lives) and structures form.
+// 15s collection gives ~700 frames at the GPU-bound 500K tier (47fps) and ~75K at 10K tier.
+const WARMUP_SECS: f64 = 5.0;
+const COLLECT_SECS: f64 = 15.0;
+const GLOBAL_CAP_SECS: f64 = 360.0; // 16 combos × 20s each + margin
 
 // ── Quick (ad-hoc) benchmark ──────────────────────────────────────────────────
 
@@ -157,7 +159,6 @@ enum State {
     Idle,
     Warmup {
         combo: usize,
-        frame: u32,
         start: Instant,
     },
     Collect {
@@ -238,18 +239,22 @@ impl BenchmarkRunner {
         matches!(self.state, State::Done)
     }
 
-    /// Returns `(completed_combos, total_combos, current_phase_frame, phase_target, is_warmup)`
+    /// Returns `(completed_combos, total_combos, elapsed_secs, target_secs, is_warmup)`
     /// while running; `None` when idle or done.
-    pub fn progress(&self) -> Option<(usize, usize, u32, u32, bool)> {
+    pub fn progress(&self) -> Option<(usize, usize, f32, f32, bool)> {
         match &self.state {
-            State::Warmup { combo, frame, .. } => {
-                Some((*combo, Self::num_combos(), *frame, WARMUP_FRAMES, true))
-            }
-            State::Collect { combo, fps, .. } => Some((
+            State::Warmup { combo, start } => Some((
                 *combo,
                 Self::num_combos(),
-                fps.len() as u32,
-                TARGET_FRAMES as u32,
+                start.elapsed().as_secs_f32(),
+                WARMUP_SECS as f32,
+                true,
+            )),
+            State::Collect { combo, start, .. } => Some((
+                *combo,
+                Self::num_combos(),
+                start.elapsed().as_secs_f32(),
+                COLLECT_SECS as f32,
                 false,
             )),
             _ => None,
@@ -264,7 +269,6 @@ impl BenchmarkRunner {
         self.vp_height = vp_h;
         self.state = State::Warmup {
             combo: 0,
-            frame: 0,
             start: Instant::now(),
         };
         BenchmarkAction::LoadCombo(0)
@@ -274,23 +278,15 @@ impl BenchmarkRunner {
     pub fn advance(&mut self, dt: f32) -> BenchmarkAction {
         let old = std::mem::replace(&mut self.state, State::Idle);
         match old {
-            State::Warmup {
-                combo,
-                frame,
-                start,
-            } => {
-                if frame + 1 >= WARMUP_FRAMES {
+            State::Warmup { combo, start } => {
+                if start.elapsed().as_secs_f64() >= WARMUP_SECS {
                     self.state = State::Collect {
                         combo,
                         fps: vec![],
                         start: Instant::now(),
                     };
                 } else {
-                    self.state = State::Warmup {
-                        combo,
-                        frame: frame + 1,
-                        start,
-                    };
+                    self.state = State::Warmup { combo, start };
                 }
                 BenchmarkAction::Continue
             }
@@ -302,14 +298,12 @@ impl BenchmarkRunner {
                 if dt > 1e-6 {
                     fps.push(1.0 / dt);
                 }
+                let combo_elapsed = start.elapsed().as_secs_f64();
                 let global_elapsed = self
                     .global_start
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0);
-                let combo_elapsed = start.elapsed().as_secs_f64();
-                let enough = fps.len() >= TARGET_FRAMES
-                    || combo_elapsed > WALL_CAP_SECS
-                    || global_elapsed > GLOBAL_CAP_SECS;
+                let enough = combo_elapsed >= COLLECT_SECS || global_elapsed > GLOBAL_CAP_SECS;
                 if enough {
                     self.results
                         .push(Self::summarize(combo, &fps, combo_elapsed, !self.vsync_off));
@@ -320,7 +314,6 @@ impl BenchmarkRunner {
                     }
                     self.state = State::Warmup {
                         combo: next,
-                        frame: 0,
                         start: Instant::now(),
                     };
                     BenchmarkAction::LoadCombo(next)

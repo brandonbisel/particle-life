@@ -563,12 +563,19 @@ pub fn draw_perf_overlay(
                     }
 
                     if runner.is_running() {
-                        if let Some((done, total, frame, target, is_warmup)) = runner.progress() {
+                        if let Some((done, total, elapsed, target, is_warmup)) = runner.progress()
+                        {
                             let phase = if is_warmup { "Warmup" } else { "Collecting" };
-                            ui.label(format!("Combo {}/{} — {}", done + 1, total, phase));
+                            ui.label(format!(
+                                "Combo {}/{} — {} ({:.0}/{:.0}s)",
+                                done + 1,
+                                total,
+                                phase,
+                                elapsed,
+                                target
+                            ));
                             ui.add(
-                                egui::ProgressBar::new(frame as f32 / target as f32)
-                                    .show_percentage(),
+                                egui::ProgressBar::new(elapsed / target).show_percentage(),
                             );
                         }
                     } else if runner.is_done() {
