@@ -4,14 +4,16 @@ version = 4
 
 [[package]]
 name = "ParticleLife"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytemuck",
  "egui",
+ "egui-phosphor",
  "egui-wgpu",
  "egui-winit",
  "env_logger",
  "log",
+ "png 0.17.16",
  "pollster 0.3.0",
  "rfd",
  "serde",
@@ -768,6 +770,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-phosphor"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "171d57331491e92f0a7c73fad1088716e3200984309f4f8684731b750cee1378"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1344,7 +1355,7 @@ dependencies = [
  "byteorder-lite",
  "moxcms",
  "num-traits",
- "png",
+ "png 0.18.1",
  "tiff",
 ]
 
@@ -2136,6 +2147,19 @@ name = "plain"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
+
+[[package]]
+name = "png"
+version = "0.17.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82151a2fc869e011c153adc57cf2789ccb8d9906ce52c0b39a6b5697749d7526"
+dependencies = [
+ "bitflags 1.3.2",
+ "crc32fast",
+ "fdeflate",
+ "flate2",
+ "miniz_oxide",
+]
 
 [[package]]
 name = "png"

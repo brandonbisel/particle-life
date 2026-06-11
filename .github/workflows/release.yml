@@ -8,6 +8,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   # ── Build release binaries for all platforms ────────────────────────────────
@@ -23,7 +24,7 @@ jobs:
             artifact: target/release/ParticleLife
             asset_name: particle-life-linux-x86_64
           - name: Windows
-            os: windows-latest
+            os: windows-2025
             artifact: target/release/ParticleLife.exe
             asset_name: particle-life-windows-x86_64.exe
           - name: macOS
@@ -31,7 +32,7 @@ jobs:
             artifact: target/release/ParticleLife
             asset_name: particle-life-macos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -47,7 +48,7 @@ jobs:
         run: cp "${{ matrix.artifact }}" "${{ matrix.asset_name }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset_name }}
           path: ${{ matrix.asset_name }}
@@ -61,10 +62,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts/
 

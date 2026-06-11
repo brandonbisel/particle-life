@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 /// Path to the auto-save file written on exit and read on startup.
 pub const SESSION_PATH: &str = "session.toml";
 /// Directory scanned for user-created `*.toml` preset files.
-pub const PRESETS_DIR:  &str = "presets";
+pub const PRESETS_DIR: &str = "presets";
 
 // ── Preset ────────────────────────────────────────────────────────────────────
 
@@ -18,44 +18,44 @@ pub const PRESETS_DIR:  &str = "presets";
 /// Serialised as TOML; all fields map directly to [`SimulationState`](crate::simulation::SimulationState).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Preset {
-    pub name:                  String,
+    pub name: String,
     #[serde(default)]
-    pub description:           String,
-    pub particle_count:        usize,
-    pub species_count:         usize,
+    pub description: String,
+    pub particle_count: usize,
+    pub species_count: usize,
     /// World width in simulation units (pixels at default zoom).
-    pub world_width:           f32,
+    pub world_width: f32,
     /// World height in simulation units (pixels at default zoom).
-    pub world_height:          f32,
-    pub particle_radius:       f32,
+    pub world_height: f32,
+    pub particle_radius: f32,
     /// Hard-core repulsion radius.
-    pub r_min:                 f32,
+    pub r_min: f32,
     /// Outer interaction cutoff radius.
-    pub r_max:                 f32,
-    pub friction:              f32,
-    pub force_scale:           f32,
+    pub r_max: f32,
+    pub friction: f32,
+    pub force_scale: f32,
     /// 0 = Wrap, 1 = Repel, 2 = Static.
-    pub border_mode:           u32,
+    pub border_mode: u32,
     pub border_repel_strength: f32,
     /// Row-major `species_count × species_count` attraction matrix; values in `[-1, 1]`.
-    pub attraction:            Vec<f32>,
+    pub attraction: Vec<f32>,
 }
 
 impl Preset {
     fn new(name: &str, desc: &str, species: usize, attraction: Vec<f32>) -> Self {
         Self {
-            name:                  name.into(),
-            description:           desc.into(),
-            particle_count:        5_000,
-            species_count:         species,
-            world_width:           1280.0,
-            world_height:          720.0,
-            particle_radius:       1.5,
-            r_min:                 0.025,
-            r_max:                 0.08,
-            friction:              0.5,
-            force_scale:           0.007,
-            border_mode:           0,
+            name: name.into(),
+            description: desc.into(),
+            particle_count: 5_000,
+            species_count: species,
+            world_width: 1280.0,
+            world_height: 720.0,
+            particle_radius: 1.5,
+            r_min: 0.025,
+            r_max: 0.08,
+            friction: 0.5,
+            force_scale: 0.007,
+            border_mode: 0,
             border_repel_strength: 5.0,
             attraction,
         }
@@ -66,7 +66,7 @@ impl Preset {
 
 /// Returns the 4 hardcoded benchmark/built-in presets.
 pub fn builtin_presets() -> Vec<Preset> {
-    vec![clusters(), chains(), rich_mix(), separation()]
+    vec![clusters(), chains(), ecosystem(), symbiosis()]
 }
 
 fn clusters() -> Preset {
@@ -80,7 +80,8 @@ fn clusters() -> Preset {
     Preset::new(
         "Clusters",
         "Like attracts like; cross-species repulsion forms compact, coloured clusters.",
-        N, a,
+        N,
+        a,
     )
 }
 
@@ -89,45 +90,53 @@ fn chains() -> Preset {
     const N: usize = 6;
     let mut a = vec![0.0f32; N * N];
     for i in 0..N {
-        a[i * N + (i + 1) % N]        =  0.9;   // i attracted to next
-        a[((i + 1) % N) * N + i]      = -0.4;   // next repelled by i
+        a[i * N + (i + 1) % N] = 0.9; // i attracted to next
+        a[((i + 1) % N) * N + i] = -0.4; // next repelled by i
     }
     Preset::new(
         "Chains",
         "Circular predator-prey chain; produces trailing spirals and filament structures.",
-        N, a,
+        N,
+        a,
     )
 }
 
-fn rich_mix() -> Preset {
+fn ecosystem() -> Preset {
+    // Species 0-2: predator-prey chain (spirals); also attracted to the cluster.
+    // Species 3-5: tight mutual-attraction cluster (blob); flees the chain.
     #[rustfmt::skip]
     let a = vec![
-         0.3_f32,  0.8,  0.5, -0.4, -0.6,  0.1,
-        -0.7,      0.3,  0.7,  0.2, -0.3, -0.5,
-        -0.4,     -0.6,  0.3,  0.9,  0.1, -0.2,
-         0.2,     -0.3, -0.8,  0.3,  0.7,  0.4,
-         0.6,      0.1, -0.1, -0.6,  0.3,  0.8,
-        -0.1,      0.5,  0.4, -0.3, -0.7,  0.3,
+        //   0      1      2      3      4      5
+         0.0_f32,  0.9,  -0.4,   0.5,   0.5,   0.5,  // 0: chases 1, flees 2, pursues cluster
+        -0.4,      0.0,   0.9,   0.5,   0.5,   0.5,  // 1: flees 0, chases 2, pursues cluster
+         0.9,     -0.4,   0.0,   0.5,   0.5,   0.5,  // 2: chases 0, flees 1, pursues cluster
+        -0.5,     -0.5,  -0.5,   0.5,   0.7,   0.7,  // 3: flees chain, bonds with cluster
+        -0.5,     -0.5,  -0.5,   0.7,   0.5,   0.7,  // 4: flees chain, bonds with cluster
+        -0.5,     -0.5,  -0.5,   0.7,   0.7,   0.5,  // 5: flees chain, bonds with cluster
     ];
     Preset::new(
-        "Rich Mix",
-        "Hand-crafted asymmetric interactions; produces a variety of emergent structures.",
-        6, a,
+        "Ecosystem",
+        "Spiraling predator chain (species 0–2) hunts a tight fleeing cluster (species 3–5).",
+        6,
+        a,
     )
 }
 
-fn separation() -> Preset {
-    const N: usize = 4;
+fn symbiosis() -> Preset {
+    // Structural inverse of Clusters: cross-species attraction, mild self-repulsion.
+    // Produces large mixed-colour aggregates instead of separated blobs.
+    const N: usize = 6;
     let mut a = vec![0.0f32; N * N];
     for i in 0..N {
         for j in 0..N {
-            a[i * N + j] = if i == j { 0.5 } else { -0.9 };
+            a[i * N + j] = if i == j { -0.1 } else { 0.6 };
         }
     }
     Preset::new(
-        "Separation",
-        "Species strongly repel all other species and clump separately.",
-        N, a,
+        "Symbiosis",
+        "Every species attracts all others but weakly repels its own kind; produces large mixed-colour aggregates.",
+        N,
+        a,
     )
 }
 
@@ -163,7 +172,10 @@ pub fn load_presets_dir() -> Vec<Preset> {
         .iter()
         .filter_map(|p| match load_preset_file(p) {
             Ok(preset) => Some(preset),
-            Err(e)     => { log::warn!("Skipping {p:?}: {e}"); None }
+            Err(e) => {
+                log::warn!("Skipping {p:?}: {e}");
+                None
+            }
         })
         .collect()
 }
@@ -180,4 +192,86 @@ pub fn save_session(preset: &Preset) {
 /// Load the last saved session, if any.
 pub fn load_session() -> Option<Preset> {
     load_preset_file(Path::new(SESSION_PATH)).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_preset_invariants(p: &Preset) {
+        assert!(p.r_min > 0.0, "{}: r_min must be positive", p.name);
+        assert!(p.r_max > p.r_min, "{}: r_max must exceed r_min", p.name);
+        assert!(
+            p.friction >= 0.0,
+            "{}: friction must be non-negative",
+            p.name
+        );
+        assert!(
+            p.force_scale > 0.0,
+            "{}: force_scale must be positive",
+            p.name
+        );
+        assert!(
+            p.species_count >= 1 && p.species_count <= 8,
+            "{}: species_count {} out of range [1, 8]",
+            p.name,
+            p.species_count
+        );
+        assert_eq!(
+            p.attraction.len(),
+            p.species_count * p.species_count,
+            "{}: attraction matrix length {} != species_count² {}",
+            p.name,
+            p.attraction.len(),
+            p.species_count * p.species_count
+        );
+        assert!(
+            p.world_width > 0.0,
+            "{}: world_width must be positive",
+            p.name
+        );
+        assert!(
+            p.world_height > 0.0,
+            "{}: world_height must be positive",
+            p.name
+        );
+    }
+
+    #[test]
+    fn builtin_presets_are_valid() {
+        for preset in builtin_presets() {
+            assert_preset_invariants(&preset);
+        }
+    }
+
+    #[test]
+    fn preset_round_trips_via_toml() {
+        for preset in builtin_presets() {
+            let serialized = toml::to_string_pretty(&preset).expect("serialize failed");
+            let restored: Preset = toml::from_str(&serialized).expect("deserialize failed");
+
+            assert_eq!(restored.name, preset.name);
+            assert_eq!(restored.particle_count, preset.particle_count);
+            assert_eq!(restored.species_count, preset.species_count);
+            assert_eq!(restored.border_mode, preset.border_mode);
+            assert_eq!(
+                restored.attraction.len(),
+                preset.attraction.len(),
+                "{}: attraction length changed after round-trip",
+                preset.name
+            );
+            for (i, (a, b)) in restored
+                .attraction
+                .iter()
+                .zip(preset.attraction.iter())
+                .enumerate()
+            {
+                assert!(
+                    (a - b).abs() < 1e-6,
+                    "{}: attraction[{i}] {a} != {b} after round-trip",
+                    preset.name
+                );
+            }
+        }
+    }
 }

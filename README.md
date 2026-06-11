@@ -6,8 +6,8 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 
 ## Features
 
-- **100K particles** at 120+ fps on a modern discrete GPU (tested: AMD RX 9070 XT)
-- **500K particles** at 20–40 fps
+- **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
+- **500K particles** at 26–47 fps (preset-dependent; see [Benchmarks](BENCHMARKS.md))
 - **8 species** with a fully editable N×N attraction matrix
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
@@ -61,15 +61,16 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 
 ## Dependencies
 
-| Crate | Version | Purpose |
-|-------|---------|---------|
-| `wgpu` | 24 | GPU compute + rendering (Vulkan backend) |
-| `winit` | 0.30 | Window management (`ApplicationHandler` API) |
-| `egui` + `egui-winit` + `egui-wgpu` | 0.31 | Immediate-mode UI overlay |
-| `bytemuck` | 1 | Safe Pod casts for GPU buffer uploads |
-| `pollster` | 0.3 | Block on async wgpu initialization |
-| `serde` + `toml` | 1 / 0.8 | Preset serialisation |
-| `rfd` | 0.15 | Native file dialogs for import/export |
+| Crate                                | Version | Purpose                                      |
+|--------------------------------------|---------|----------------------------------------------|
+| `wgpu`                               | 24      | GPU compute + rendering (Vulkan backend)     |
+| `winit`                              | 0.30    | Window management (`ApplicationHandler` API) |
+| `egui` + `egui-winit` + `egui-wgpu`  | 0.31    | Immediate-mode UI overlay                    |
+| `egui-phosphor`                      | 0.9     | Phosphor icon font for the toolbar (MIT)     |
+| `bytemuck`                           | 1       | Safe Pod casts for GPU buffer uploads        |
+| `pollster`                           | 0.3     | Block on async wgpu initialization           |
+| `serde` + `toml`                     | 1 / 0.8 | Preset serialisation                         |
+| `rfd`                                | 0.15    | Native file dialogs for import/export        |
 
 ## Controls
 
@@ -92,6 +93,7 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
 | `0` | Reset view |
+| `F11` | Toggle fullscreen |
 | `Escape` | Quit |
 
 ## Project Structure

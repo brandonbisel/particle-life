@@ -5,20 +5,22 @@
 use std::path::Path;
 use std::time::Instant;
 
-use crate::config::{builtin_presets, Preset};
+use crate::config::{Preset, builtin_presets};
 
 /// Particle counts used in each tier of the full benchmark suite.
 pub const BENCHMARK_TIERS: [usize; 4] = [10_000, 50_000, 100_000, 500_000];
-const BUILTIN_COUNT: usize  = 4;
-const WARMUP_FRAMES: u32    = 300;   // ~2s at 165fps, ~7s at 44fps — enough to let structures form
-const TARGET_FRAMES: usize  = 300;
-const WALL_CAP_SECS: f64    = 60.0; // bumped slightly to accommodate longer warmup at low fps
-const GLOBAL_CAP_SECS: f64  = 600.0;
+const BUILTIN_COUNT: usize = 4;
+// Time-based targets: physics are dt-driven so wall-clock seconds = simulation seconds.
+// 5s warmup lets friction decay initial conditions (~3.6 half-lives) and structures form.
+// 15s collection gives ~700 frames at the GPU-bound 500K tier (47fps) and ~75K at 10K tier.
+const WARMUP_SECS: f64 = 5.0;
+const COLLECT_SECS: f64 = 15.0;
+const GLOBAL_CAP_SECS: f64 = 360.0; // 16 combos × 20s each + margin
 
 // ── Quick (ad-hoc) benchmark ──────────────────────────────────────────────────
 
-const QUICK_WARMUP: u32    = 120;   // frames before collection starts
-const QUICK_FRAMES: usize  = 240;   // frames to collect
+const QUICK_WARMUP: u32 = 120; // frames before collection starts
+const QUICK_FRAMES: usize = 240; // frames to collect
 
 /// Ad-hoc single-point benchmark: warms up for [`QUICK_WARMUP`] frames then
 /// collects FPS samples for [`QUICK_FRAMES`] frames at the current particle count.
@@ -28,13 +30,27 @@ pub struct QuickBench {
 
 enum QuickBenchState {
     Idle,
-    Warmup    { frame: u32 },
-    Collecting { fps: Vec<f32>, particles: u32 },
-    Done      { avg: f32, min: f32, max: f32, particles: u32 },
+    Warmup {
+        frame: u32,
+    },
+    Collecting {
+        fps: Vec<f32>,
+        particles: u32,
+    },
+    Done {
+        avg: f32,
+        min: f32,
+        max: f32,
+        particles: u32,
+    },
 }
 
 impl QuickBench {
-    pub fn new() -> Self { Self { state: QuickBenchState::Idle } }
+    pub fn new() -> Self {
+        Self {
+            state: QuickBenchState::Idle,
+        }
+    }
 
     /// Begin a new quick-bench run at the current GPU particle count.
     pub fn start(&mut self, particles: u32) {
@@ -44,7 +60,10 @@ impl QuickBench {
 
     /// Returns `true` while warmup or sample collection is in progress.
     pub fn is_running(&self) -> bool {
-        matches!(self.state, QuickBenchState::Warmup { .. } | QuickBenchState::Collecting { .. })
+        matches!(
+            self.state,
+            QuickBenchState::Warmup { .. } | QuickBenchState::Collecting { .. }
+        )
     }
 
     /// Returns true on the frame the run completes.
@@ -53,41 +72,62 @@ impl QuickBench {
         match old {
             QuickBenchState::Warmup { frame } => {
                 if frame + 1 >= QUICK_WARMUP {
-                    self.state = QuickBenchState::Collecting { fps: vec![], particles };
+                    self.state = QuickBenchState::Collecting {
+                        fps: vec![],
+                        particles,
+                    };
                 } else {
                     self.state = QuickBenchState::Warmup { frame: frame + 1 };
                 }
                 false
             }
             QuickBenchState::Collecting { mut fps, particles } => {
-                if dt > 1e-6 { fps.push(1.0 / dt); }
+                if dt > 1e-6 {
+                    fps.push(1.0 / dt);
+                }
                 if fps.len() >= QUICK_FRAMES {
-                    let n   = fps.len().max(1);
+                    let n = fps.len().max(1);
                     let avg = fps.iter().sum::<f32>() / n as f32;
                     let min = fps.iter().cloned().fold(f32::MAX, f32::min);
-                    let max = fps.iter().cloned().fold(0.0_f32,  f32::max);
-                    self.state = QuickBenchState::Done { avg, min, max, particles };
+                    let max = fps.iter().cloned().fold(0.0_f32, f32::max);
+                    self.state = QuickBenchState::Done {
+                        avg,
+                        min,
+                        max,
+                        particles,
+                    };
                     return true;
                 }
                 self.state = QuickBenchState::Collecting { fps, particles };
                 false
             }
-            other => { self.state = other; false }
+            other => {
+                self.state = other;
+                false
+            }
         }
     }
 
     /// Progress (current_frame, total_frames, is_warmup).  None when idle/done.
     pub fn progress(&self) -> Option<(u32, u32, bool)> {
         match &self.state {
-            QuickBenchState::Warmup    { frame }    => Some((*frame, QUICK_WARMUP, true)),
-            QuickBenchState::Collecting { fps, .. } => Some((fps.len() as u32, QUICK_FRAMES as u32, false)),
+            QuickBenchState::Warmup { frame } => Some((*frame, QUICK_WARMUP, true)),
+            QuickBenchState::Collecting { fps, .. } => {
+                Some((fps.len() as u32, QUICK_FRAMES as u32, false))
+            }
             _ => None,
         }
     }
 
     /// Returns `(avg_fps, min_fps, max_fps, particles)` once the run is complete.
     pub fn result(&self) -> Option<(f32, f32, f32, u32)> {
-        if let QuickBenchState::Done { avg, min, max, particles } = &self.state {
+        if let QuickBenchState::Done {
+            avg,
+            min,
+            max,
+            particles,
+        } = &self.state
+        {
             Some((*avg, *min, *max, *particles))
         } else {
             None
@@ -100,23 +140,32 @@ impl QuickBench {
 /// Per-combo result produced by [`BenchmarkRunner`].
 #[derive(Clone)]
 pub struct BenchmarkResult {
-    pub preset_name:      String,
-    pub particle_count:   usize,
-    pub species_count:    usize,
-    pub avg_fps:          f32,
-    pub min_fps:          f32,
-    pub max_fps:          f32,
-    pub avg_frame_ms:     f32,
+    pub preset_name: String,
+    pub particle_count: usize,
+    pub species_count: usize,
+    pub avg_fps: f32,
+    pub min_fps: f32,
+    pub max_fps: f32,
+    pub avg_frame_ms: f32,
     pub frames_collected: u32,
-    pub wall_secs:        f32,
+    pub wall_secs: f32,
+    /// Whether vsync was enabled during this run.
+    pub vsync: bool,
 }
 
 // ── State machine ─────────────────────────────────────────────────────────────
 
 enum State {
     Idle,
-    Warmup  { combo: usize, frame: u32,     start: Instant },
-    Collect { combo: usize, fps: Vec<f32>,  start: Instant },
+    Warmup {
+        combo: usize,
+        start: Instant,
+    },
+    Collect {
+        combo: usize,
+        fps: Vec<f32>,
+        start: Instant,
+    },
     Done,
 }
 
@@ -124,11 +173,13 @@ enum State {
 /// × [`BENCHMARK_TIERS`] combination, collecting [`TARGET_FRAMES`] FPS samples per combo
 /// after a [`WARMUP_FRAMES`]-frame warm-up period.
 pub struct BenchmarkRunner {
-    state:        State,
-    pub results:  Vec<BenchmarkResult>,
+    state: State,
+    pub results: Vec<BenchmarkResult>,
     global_start: Option<Instant>,
-    pub vp_width:  u32,
+    pub vp_width: u32,
     pub vp_height: u32,
+    /// When `true` (the default), the suite runs with vsync disabled for accurate timing.
+    pub vsync_off: bool,
 }
 
 /// Instruction returned by [`BenchmarkRunner::advance`] each frame.
@@ -147,21 +198,28 @@ pub enum BenchmarkAction {
 impl BenchmarkRunner {
     pub fn new() -> Self {
         Self {
-            state:        State::Idle,
-            results:      vec![],
+            state: State::Idle,
+            results: vec![],
             global_start: None,
-            vp_width:     0,
-            vp_height:    0,
+            vp_width: 0,
+            vp_height: 0,
+            vsync_off: true,
         }
     }
 
     /// Total number of (preset × tier) combinations in the suite.
-    pub fn num_combos() -> usize { BUILTIN_COUNT * BENCHMARK_TIERS.len() }
+    pub fn num_combos() -> usize {
+        BUILTIN_COUNT * BENCHMARK_TIERS.len()
+    }
 
     /// Which built-in preset index a flat combo index maps to.
-    pub fn combo_preset_idx(combo: usize) -> usize { combo / BENCHMARK_TIERS.len() }
+    pub fn combo_preset_idx(combo: usize) -> usize {
+        combo / BENCHMARK_TIERS.len()
+    }
     /// Which tier index a flat combo index maps to.
-    pub fn combo_tier_idx(combo: usize)   -> usize { combo % BENCHMARK_TIERS.len() }
+    pub fn combo_tier_idx(combo: usize) -> usize {
+        combo % BENCHMARK_TIERS.len()
+    }
 
     /// Returns the Preset for a given combo with particle_count already set.
     pub fn combo_preset(combo: usize) -> Preset {
@@ -177,16 +235,28 @@ impl BenchmarkRunner {
     }
 
     /// Returns `true` after all combos have finished.
-    pub fn is_done(&self) -> bool { matches!(self.state, State::Done) }
+    pub fn is_done(&self) -> bool {
+        matches!(self.state, State::Done)
+    }
 
-    /// Returns `(completed_combos, total_combos, current_phase_frame, phase_target, is_warmup)`
+    /// Returns `(completed_combos, total_combos, elapsed_secs, target_secs, is_warmup)`
     /// while running; `None` when idle or done.
-    pub fn progress(&self) -> Option<(usize, usize, u32, u32, bool)> {
+    pub fn progress(&self) -> Option<(usize, usize, f32, f32, bool)> {
         match &self.state {
-            State::Warmup  { combo, frame, .. } =>
-                Some((*combo, Self::num_combos(), *frame, WARMUP_FRAMES, true)),
-            State::Collect { combo, fps, .. } =>
-                Some((*combo, Self::num_combos(), fps.len() as u32, TARGET_FRAMES as u32, false)),
+            State::Warmup { combo, start } => Some((
+                *combo,
+                Self::num_combos(),
+                start.elapsed().as_secs_f32(),
+                WARMUP_SECS as f32,
+                true,
+            )),
+            State::Collect { combo, start, .. } => Some((
+                *combo,
+                Self::num_combos(),
+                start.elapsed().as_secs_f32(),
+                COLLECT_SECS as f32,
+                false,
+            )),
             _ => None,
         }
     }
@@ -195,9 +265,12 @@ impl BenchmarkRunner {
     pub fn start(&mut self, vp_w: u32, vp_h: u32) -> BenchmarkAction {
         self.results.clear();
         self.global_start = Some(Instant::now());
-        self.vp_width  = vp_w;
+        self.vp_width = vp_w;
         self.vp_height = vp_h;
-        self.state = State::Warmup { combo: 0, frame: 0, start: Instant::now() };
+        self.state = State::Warmup {
+            combo: 0,
+            start: Instant::now(),
+        };
         BenchmarkAction::LoadCombo(0)
     }
 
@@ -205,58 +278,75 @@ impl BenchmarkRunner {
     pub fn advance(&mut self, dt: f32) -> BenchmarkAction {
         let old = std::mem::replace(&mut self.state, State::Idle);
         match old {
-            State::Warmup { combo, frame, start } => {
-                if frame + 1 >= WARMUP_FRAMES {
-                    self.state = State::Collect { combo, fps: vec![], start: Instant::now() };
+            State::Warmup { combo, start } => {
+                if start.elapsed().as_secs_f64() >= WARMUP_SECS {
+                    self.state = State::Collect {
+                        combo,
+                        fps: vec![],
+                        start: Instant::now(),
+                    };
                 } else {
-                    self.state = State::Warmup { combo, frame: frame + 1, start };
+                    self.state = State::Warmup { combo, start };
                 }
                 BenchmarkAction::Continue
             }
-            State::Collect { combo, mut fps, start } => {
-                if dt > 1e-6 { fps.push(1.0 / dt); }
-                let global_elapsed = self.global_start
+            State::Collect {
+                combo,
+                mut fps,
+                start,
+            } => {
+                if dt > 1e-6 {
+                    fps.push(1.0 / dt);
+                }
+                let combo_elapsed = start.elapsed().as_secs_f64();
+                let global_elapsed = self
+                    .global_start
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0);
-                let combo_elapsed = start.elapsed().as_secs_f64();
-                let enough = fps.len() >= TARGET_FRAMES
-                          || combo_elapsed > WALL_CAP_SECS
-                          || global_elapsed > GLOBAL_CAP_SECS;
+                let enough = combo_elapsed >= COLLECT_SECS || global_elapsed > GLOBAL_CAP_SECS;
                 if enough {
-                    self.results.push(Self::summarize(combo, &fps, combo_elapsed));
+                    self.results
+                        .push(Self::summarize(combo, &fps, combo_elapsed, !self.vsync_off));
                     let next = combo + 1;
                     if next >= Self::num_combos() || global_elapsed > GLOBAL_CAP_SECS {
                         self.state = State::Done;
                         return BenchmarkAction::Done;
                     }
-                    self.state = State::Warmup { combo: next, frame: 0, start: Instant::now() };
+                    self.state = State::Warmup {
+                        combo: next,
+                        start: Instant::now(),
+                    };
                     BenchmarkAction::LoadCombo(next)
                 } else {
                     self.state = State::Collect { combo, fps, start };
                     BenchmarkAction::Continue
                 }
             }
-            other => { self.state = other; BenchmarkAction::Continue }
+            other => {
+                self.state = other;
+                BenchmarkAction::Continue
+            }
         }
     }
 
-    fn summarize(combo: usize, fps: &[f32], wall_secs: f64) -> BenchmarkResult {
+    fn summarize(combo: usize, fps: &[f32], wall_secs: f64, vsync: bool) -> BenchmarkResult {
         let presets = builtin_presets();
         let p = &presets[Self::combo_preset_idx(combo)];
         let n = fps.len().max(1);
         let avg = fps.iter().sum::<f32>() / n as f32;
-        let min = fps.iter().cloned().fold(f32::MAX,  f32::min);
-        let max = fps.iter().cloned().fold(0.0_f32,   f32::max);
+        let min = fps.iter().cloned().fold(f32::MAX, f32::min);
+        let max = fps.iter().cloned().fold(0.0_f32, f32::max);
         BenchmarkResult {
-            preset_name:      p.name.clone(),
-            particle_count:   BENCHMARK_TIERS[Self::combo_tier_idx(combo)],
-            species_count:    p.species_count,
-            avg_fps:          avg,
-            min_fps:          if fps.is_empty() { 0.0 } else { min },
-            max_fps:          if fps.is_empty() { 0.0 } else { max },
-            avg_frame_ms:     if avg > 0.0 { 1000.0 / avg } else { 0.0 },
+            preset_name: p.name.clone(),
+            particle_count: BENCHMARK_TIERS[Self::combo_tier_idx(combo)],
+            species_count: p.species_count,
+            avg_fps: avg,
+            min_fps: if fps.is_empty() { 0.0 } else { min },
+            max_fps: if fps.is_empty() { 0.0 } else { max },
+            avg_frame_ms: if avg > 0.0 { 1000.0 / avg } else { 0.0 },
             frames_collected: fps.len() as u32,
-            wall_secs:        wall_secs as f32,
+            wall_secs: wall_secs as f32,
+            vsync,
         }
     }
 
@@ -264,15 +354,26 @@ impl BenchmarkRunner {
     pub fn write_csv(&self, path: &Path) -> std::io::Result<()> {
         use std::io::Write;
         let mut f = std::fs::File::create(path)?;
-        writeln!(f, "preset,particles,species,vp_w,vp_h,avg_fps,min_fps,max_fps,avg_frame_ms,frames,wall_secs")?;
+        writeln!(
+            f,
+            "preset,particles,species,vp_w,vp_h,avg_fps,min_fps,max_fps,avg_frame_ms,frames,wall_secs,vsync"
+        )?;
         for r in &self.results {
             writeln!(
                 f,
-                "{},{},{},{},{},{:.1},{:.1},{:.1},{:.2},{},{:.1}",
-                r.preset_name, r.particle_count, r.species_count,
-                self.vp_width, self.vp_height,
-                r.avg_fps, r.min_fps, r.max_fps, r.avg_frame_ms,
-                r.frames_collected, r.wall_secs,
+                "{},{},{},{},{},{:.1},{:.1},{:.1},{:.2},{},{:.1},{}",
+                r.preset_name,
+                r.particle_count,
+                r.species_count,
+                self.vp_width,
+                self.vp_height,
+                r.avg_fps,
+                r.min_fps,
+                r.max_fps,
+                r.avg_frame_ms,
+                r.frames_collected,
+                r.wall_secs,
+                if r.vsync { "on" } else { "off" },
             )?;
         }
         Ok(())

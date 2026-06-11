@@ -1,6 +1,6 @@
 [package]
 name = "ParticleLife"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [dependencies]
@@ -16,3 +16,5 @@ pollster   = "0.3"
 serde      = { version = "1", features = ["derive"] }
 toml       = "0.8"
 rfd        = "0.15"
+egui-phosphor = "0.9.0"
+png = "0.17"
