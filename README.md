@@ -6,8 +6,8 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 
 ## Features
 
-- **100K particles** at 120+ fps on a modern discrete GPU (tested: AMD RX 9070 XT)
-- **500K particles** at 20–40 fps
+- **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
+- **500K particles** at ~46 fps
 - **8 species** with a fully editable N×N attraction matrix
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
