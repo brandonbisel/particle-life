@@ -147,6 +147,8 @@ pub struct BenchmarkResult {
     pub avg_frame_ms: f32,
     pub frames_collected: u32,
     pub wall_secs: f32,
+    /// Whether vsync was enabled during this run.
+    pub vsync: bool,
 }
 
 // ── State machine ─────────────────────────────────────────────────────────────
@@ -175,6 +177,8 @@ pub struct BenchmarkRunner {
     global_start: Option<Instant>,
     pub vp_width: u32,
     pub vp_height: u32,
+    /// When `true` (the default), the suite runs with vsync disabled for accurate timing.
+    pub vsync_off: bool,
 }
 
 /// Instruction returned by [`BenchmarkRunner::advance`] each frame.
@@ -198,6 +202,7 @@ impl BenchmarkRunner {
             global_start: None,
             vp_width: 0,
             vp_height: 0,
+            vsync_off: true,
         }
     }
 
@@ -307,7 +312,7 @@ impl BenchmarkRunner {
                     || global_elapsed > GLOBAL_CAP_SECS;
                 if enough {
                     self.results
-                        .push(Self::summarize(combo, &fps, combo_elapsed));
+                        .push(Self::summarize(combo, &fps, combo_elapsed, !self.vsync_off));
                     let next = combo + 1;
                     if next >= Self::num_combos() || global_elapsed > GLOBAL_CAP_SECS {
                         self.state = State::Done;
@@ -331,7 +336,7 @@ impl BenchmarkRunner {
         }
     }
 
-    fn summarize(combo: usize, fps: &[f32], wall_secs: f64) -> BenchmarkResult {
+    fn summarize(combo: usize, fps: &[f32], wall_secs: f64, vsync: bool) -> BenchmarkResult {
         let presets = builtin_presets();
         let p = &presets[Self::combo_preset_idx(combo)];
         let n = fps.len().max(1);
@@ -348,6 +353,7 @@ impl BenchmarkRunner {
             avg_frame_ms: if avg > 0.0 { 1000.0 / avg } else { 0.0 },
             frames_collected: fps.len() as u32,
             wall_secs: wall_secs as f32,
+            vsync,
         }
     }
 
@@ -357,12 +363,12 @@ impl BenchmarkRunner {
         let mut f = std::fs::File::create(path)?;
         writeln!(
             f,
-            "preset,particles,species,vp_w,vp_h,avg_fps,min_fps,max_fps,avg_frame_ms,frames,wall_secs"
+            "preset,particles,species,vp_w,vp_h,avg_fps,min_fps,max_fps,avg_frame_ms,frames,wall_secs,vsync"
         )?;
         for r in &self.results {
             writeln!(
                 f,
-                "{},{},{},{},{},{:.1},{:.1},{:.1},{:.2},{},{:.1}",
+                "{},{},{},{},{},{:.1},{:.1},{:.1},{:.2},{},{:.1},{}",
                 r.preset_name,
                 r.particle_count,
                 r.species_count,
@@ -374,6 +380,7 @@ impl BenchmarkRunner {
                 r.avg_frame_ms,
                 r.frames_collected,
                 r.wall_secs,
+                if r.vsync { "on" } else { "off" },
             )?;
         }
         Ok(())

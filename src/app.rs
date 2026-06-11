@@ -108,6 +108,7 @@ struct AppState {
     // Benchmark
     benchmark: benchmark::BenchmarkRunner,
     quick_bench: benchmark::QuickBench,
+    vsync: bool,
 
     // Mouse tracking
     cursor_px: PhysicalPosition<f64>,
@@ -192,6 +193,7 @@ impl ApplicationHandler for AppHandler {
             selected_preset: 0,
             benchmark: benchmark::BenchmarkRunner::new(),
             quick_bench: benchmark::QuickBench::new(),
+            vsync: true,
             tool: ui::Tool::Pan,
             tool_range: 0.1,
             mouse_strength: 2.0,
@@ -465,19 +467,29 @@ impl ApplicationHandler for AppHandler {
                     let border_mode = sim.border_mode;
                     let preset_library = &state.preset_library;
                     let selected_preset = &mut state.selected_preset;
-                    let benchmark = &state.benchmark;
+                    let benchmark = &mut state.benchmark;
                     let quick_bench = &state.quick_bench;
+                    let vsync = state.vsync;
+                    let vsync_available = state.renderer.vsync_toggle_available();
                     let mut ui_r = ui::UiResponse::default();
                     let mut bench_r = ui::BenchmarkPanelResponse {
                         start: false,
                         export_csv: false,
                         start_quick: false,
+                        vsync: None,
                     };
                     let mut reset_view = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
                         ui_r = ui::draw_ui(ctx, sim, preset_library, selected_preset);
-                        bench_r =
-                            ui::draw_perf_overlay(ctx, frame_times, sim, quick_bench, benchmark);
+                        bench_r = ui::draw_perf_overlay(
+                            ctx,
+                            frame_times,
+                            sim,
+                            quick_bench,
+                            benchmark,
+                            vsync,
+                            vsync_available,
+                        );
                         reset_view = ui::draw_toolbar(
                             ctx,
                             tool,
@@ -554,9 +566,20 @@ impl ApplicationHandler for AppHandler {
                     log::warn!("Export failed: {e}");
                 }
 
+                // Global vsync toggle
+                if let Some(new_vsync) = bench_resp.vsync {
+                    state.vsync = new_vsync;
+                    if !state.benchmark.is_running() {
+                        state.renderer.set_vsync(new_vsync);
+                    }
+                }
+
                 // Benchmark
                 if bench_resp.start {
                     let sz = window.inner_size();
+                    if state.benchmark.vsync_off {
+                        state.renderer.set_vsync(false);
+                    }
                     let action = state.benchmark.start(sz.width, sz.height);
                     Self::handle_benchmark_action(
                         &mut state.sim,
@@ -576,6 +599,9 @@ impl ApplicationHandler for AppHandler {
                 }
                 if state.benchmark.is_running() {
                     let action = state.benchmark.advance(dt);
+                    if matches!(action, benchmark::BenchmarkAction::Done) {
+                        state.renderer.set_vsync(state.vsync);
+                    }
                     Self::handle_benchmark_action(
                         &mut state.sim,
                         &state.renderer,

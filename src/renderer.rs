@@ -20,6 +20,8 @@ pub struct WgpuState {
     globals_buf: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     particle_radius: f32,
+    immediate_supported: bool,
+    vsync: bool,
 }
 
 impl WgpuState {
@@ -61,6 +63,9 @@ impl WgpuState {
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
+        let immediate_supported = caps
+            .present_modes
+            .contains(&wgpu::PresentMode::Immediate);
 
         let size = window.inner_size();
         let surface_config = wgpu::SurfaceConfiguration {
@@ -182,9 +187,33 @@ impl WgpuState {
             globals_buf,
             globals_bind_group,
             particle_radius: 3.0,
+            immediate_supported,
+            vsync: true,
         };
         state.update_globals([0.5, 0.5], 1.0, 1.0, 1.5 / 720.0);
         state
+    }
+
+    /// Switch between vsync-on (`Fifo`) and vsync-off (`Immediate`).
+    ///
+    /// Falls back silently to `Fifo` if `Immediate` is not supported by the adapter,
+    /// in which case `vsync_enabled` will still return `true` after the call.
+    pub fn set_vsync(&mut self, enabled: bool) {
+        let mode = if enabled || !self.immediate_supported {
+            wgpu::PresentMode::Fifo
+        } else {
+            wgpu::PresentMode::Immediate
+        };
+        if self.surface_config.present_mode != mode {
+            self.surface_config.present_mode = mode;
+            self.surface.configure(&self.device, &self.surface_config);
+        }
+        self.vsync = matches!(self.surface_config.present_mode, wgpu::PresentMode::Fifo);
+    }
+
+    /// Whether the adapter supports `PresentMode::Immediate` (vsync-off).
+    pub fn vsync_toggle_available(&self) -> bool {
+        self.immediate_supported
     }
 
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {

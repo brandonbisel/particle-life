@@ -33,6 +33,8 @@ pub struct BenchmarkPanelResponse {
     pub export_csv: bool,
     /// Start a quick single-point benchmark at the current particle count.
     pub start_quick: bool,
+    /// `Some(v)` when the user toggled the global vsync checkbox.
+    pub vsync: Option<bool>,
 }
 
 /// The active mouse tool selected in the toolbar.
@@ -437,12 +439,15 @@ pub fn draw_perf_overlay(
     frame_times: &VecDeque<f32>,
     sim: &SimulationState,
     quick_bench: &benchmark::QuickBench,
-    runner: &benchmark::BenchmarkRunner,
+    runner: &mut benchmark::BenchmarkRunner,
+    vsync: bool,
+    vsync_available: bool,
 ) -> BenchmarkPanelResponse {
     let mut resp = BenchmarkPanelResponse {
         start: false,
         export_csv: false,
         start_quick: false,
+        vsync: None,
     };
 
     let n = frame_times.len();
@@ -499,6 +504,18 @@ pub fn draw_perf_overlay(
 
             ui.separator();
 
+            // Global vsync toggle (Quick Bench follows this setting)
+            if vsync_available {
+                let mut vsync_val = vsync;
+                if ui.checkbox(&mut vsync_val, "VSync").changed() {
+                    resp.vsync = Some(vsync_val);
+                }
+            } else {
+                ui.add_enabled(false, egui::Checkbox::new(&mut true, "VSync (unavailable)"));
+            }
+
+            ui.separator();
+
             // Quick bench
             if let Some((frame, total, is_warmup)) = quick_bench.progress() {
                 let phase = if is_warmup { "Warmup" } else { "Collecting" };
@@ -535,6 +552,16 @@ pub fn draw_perf_overlay(
             egui::CollapsingHeader::new("Suite Benchmark")
                 .default_open(false)
                 .show(ui, |ui| {
+                    // Vsync toggle for suite runs; disabled while a run is in progress
+                    let mut suite_vsync = !runner.vsync_off;
+                    let cb = ui.add_enabled(
+                        !runner.is_running(),
+                        egui::Checkbox::new(&mut suite_vsync, "VSync during suite"),
+                    );
+                    if cb.changed() {
+                        runner.vsync_off = !suite_vsync;
+                    }
+
                     if runner.is_running() {
                         if let Some((done, total, frame, target, is_warmup)) = runner.progress() {
                             let phase = if is_warmup { "Warmup" } else { "Collecting" };
