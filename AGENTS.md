@@ -12,6 +12,34 @@ cargo check             # fast type/borrow check without linking
 
 No tests exist yet. `cargo check` is the fastest way to verify changes compile.
 
+## Branching Strategy
+
+| Branch | Role |
+|--------|------|
+| `main` | Production — only release merges land here; triggers a GitHub Release |
+| `dev` | Integration — feature branches merge here; triggers CI |
+| `release/x.y.z` | Release candidate — cut from `dev`, groomed, then PR'd to `main` |
+| `feature/*` | Short-lived feature work; PR target is always `dev` |
+
+Before merging a release to `main`, bump `version` in `Cargo.toml` — the release workflow reads it to tag the GitHub Release.
+
+## CI/CD
+
+Two workflows live in `.github/workflows/`:
+
+**`ci.yml`** — runs on push to `dev` / `release/**` and on PRs targeting `dev` or `main`:
+
+| Job | What it does |
+|-----|-------------|
+| `check` | `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo doc --no-deps` |
+| `test` | `cargo test` (gates on `check`) |
+| `build` | `cargo build --release` for Linux, Windows, macOS in parallel (gates on `check`) |
+
+**`release.yml`** — runs on push to `main` only:
+Builds all three platforms, then creates a GitHub Release tagged with the version from `Cargo.toml`, attaching all three binaries with auto-generated release notes.
+
+Clippy is enforced with `-D warnings` — all warnings must be clean before merging to `dev`.
+
 ## Platform Support
 
 The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal on macOS. On Linux the adapter log line will show `RADV GFX1201` confirming Vulkan is selected. Confirmed working: Linux (AMD RX 9070 XT, RADV). Untested: Windows, macOS.

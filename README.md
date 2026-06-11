@@ -2,7 +2,7 @@
 
 A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written in Rust. Up to 500,000 particles interact via emergent attraction/repulsion rules, running entirely on the GPU at real-time frame rates.
 
-![Particle Life](https://img.shields.io/badge/language-Rust-orange) ![GPU](https://img.shields.io/badge/GPU-wgpu%2024-blue) ![UI](https://img.shields.io/badge/UI-egui%200.31-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen)
+![Particle Life](https://img.shields.io/badge/language-Rust-orange) ![GPU](https://img.shields.io/badge/GPU-wgpu%2024-blue) ![UI](https://img.shields.io/badge/UI-egui%200.31-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen) ![CI](https://github.com/brandonbisel/particle-life/actions/workflows/ci.yml/badge.svg?branch=dev)
 
 ## Features
 
