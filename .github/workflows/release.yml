@@ -24,7 +24,7 @@ jobs:
             artifact: target/release/ParticleLife
             asset_name: particle-life-linux-x86_64
           - name: Windows
-            os: windows-latest
+            os: windows-2025
             artifact: target/release/ParticleLife.exe
             asset_name: particle-life-windows-x86_64.exe
           - name: macOS

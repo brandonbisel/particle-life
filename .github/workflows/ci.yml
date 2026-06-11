@@ -70,7 +70,7 @@ jobs:
             os: ubuntu-latest
             artifact: target/release/ParticleLife
           - name: Windows
-            os: windows-latest
+            os: windows-2025
             artifact: target/release/ParticleLife.exe
           - name: macOS
             os: macos-latest
