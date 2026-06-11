@@ -64,6 +64,7 @@ pub fn draw_toolbar(
 
     egui::Window::new("Tools")
         .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
+        .title_bar(false)
         .resizable(false)
         .collapsible(false)
         .show(ctx, |ui| {
@@ -79,7 +80,7 @@ pub fn draw_toolbar(
             let r = ui
                 .add_sized(
                     icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::ZoomIn, "⊕"),
+                    egui::SelectableLabel::new(*tool == Tool::ZoomIn, "+"),
                 )
                 .on_hover_text("Zoom In — click to zoom in centered on the cursor");
             if r.clicked() {
@@ -89,7 +90,7 @@ pub fn draw_toolbar(
             let r = ui
                 .add_sized(
                     icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::ZoomOut, "⊖"),
+                    egui::SelectableLabel::new(*tool == Tool::ZoomOut, "−"),
                 )
                 .on_hover_text("Zoom Out — click to zoom out centered on the cursor");
             if r.clicked() {
@@ -119,7 +120,7 @@ pub fn draw_toolbar(
             let r = ui
                 .add_sized(
                     icon_sz,
-                    egui::SelectableLabel::new(*tool == Tool::Spawn, "✦"),
+                    egui::SelectableLabel::new(*tool == Tool::Spawn, "◆"),
                 )
                 .on_hover_text("Spawn — hold to emit new particles at the cursor");
             if r.clicked() {
@@ -129,7 +130,7 @@ pub fn draw_toolbar(
             ui.separator();
 
             if ui
-                .add_sized(icon_sz, egui::Button::new("⌂"))
+                .add_sized(icon_sz, egui::Button::new("↺"))
                 .on_hover_text("Reset view to default zoom and position")
                 .clicked()
             {
