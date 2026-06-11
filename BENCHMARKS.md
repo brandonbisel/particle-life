@@ -18,7 +18,7 @@ Results recorded with the built-in Suite Benchmark (vsync off, 5s warmup + 15s c
 |--------|--------:|----------------|-----------|
 | Clusters | 6 | Diagonal: `+0.7`, off-diagonal: `−0.2` | Like attracts like; compact same-colour blobs with mild intermingling |
 | Chains | 6 | Circular predator-prey ring | Each species chases the next, flees the previous; trailing spirals and filaments |
-| Rich Mix | 6 | Hand-crafted asymmetric | Mixed attractions and repulsions; varied emergent structures simultaneously |
+| Ecosystem | 6 | Two-group asymmetric | Spiraling predator chain (species 0–2) hunts a tight fleeing cluster (species 3–5); two coexisting emergent structures |
 | Symbiosis | 6 | Diagonal: `−0.1`, off-diagonal: `+0.6` | Every species attracts all others, weakly repels its own kind; large mixed-colour aggregates |
 
 Symbiosis is the structural inverse of Clusters — exercises cross-species attraction and uniform spatial mixing rather than species segregation.

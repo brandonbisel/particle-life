@@ -66,7 +66,7 @@ impl Preset {
 
 /// Returns the 4 hardcoded benchmark/built-in presets.
 pub fn builtin_presets() -> Vec<Preset> {
-    vec![clusters(), chains(), rich_mix(), symbiosis()]
+    vec![clusters(), chains(), ecosystem(), symbiosis()]
 }
 
 fn clusters() -> Preset {
@@ -101,19 +101,22 @@ fn chains() -> Preset {
     )
 }
 
-fn rich_mix() -> Preset {
+fn ecosystem() -> Preset {
+    // Species 0-2: predator-prey chain (spirals); also attracted to the cluster.
+    // Species 3-5: tight mutual-attraction cluster (blob); flees the chain.
     #[rustfmt::skip]
     let a = vec![
-         0.3_f32,  0.8,  0.5, -0.4, -0.6,  0.1,
-        -0.7,      0.3,  0.7,  0.2, -0.3, -0.5,
-        -0.4,     -0.6,  0.3,  0.9,  0.1, -0.2,
-         0.2,     -0.3, -0.8,  0.3,  0.7,  0.4,
-         0.6,      0.1, -0.1, -0.6,  0.3,  0.8,
-        -0.1,      0.5,  0.4, -0.3, -0.7,  0.3,
+        //   0      1      2      3      4      5
+         0.0_f32,  0.9,  -0.4,   0.5,   0.5,   0.5,  // 0: chases 1, flees 2, pursues cluster
+        -0.4,      0.0,   0.9,   0.5,   0.5,   0.5,  // 1: flees 0, chases 2, pursues cluster
+         0.9,     -0.4,   0.0,   0.5,   0.5,   0.5,  // 2: chases 0, flees 1, pursues cluster
+        -0.5,     -0.5,  -0.5,   0.5,   0.7,   0.7,  // 3: flees chain, bonds with cluster
+        -0.5,     -0.5,  -0.5,   0.7,   0.5,   0.7,  // 4: flees chain, bonds with cluster
+        -0.5,     -0.5,  -0.5,   0.7,   0.7,   0.5,  // 5: flees chain, bonds with cluster
     ];
     Preset::new(
-        "Rich Mix",
-        "Hand-crafted asymmetric interactions; produces a variety of emergent structures.",
+        "Ecosystem",
+        "Spiraling predator chain (species 0–2) hunts a tight fleeing cluster (species 3–5).",
         6,
         a,
     )
@@ -198,8 +201,16 @@ mod tests {
     fn assert_preset_invariants(p: &Preset) {
         assert!(p.r_min > 0.0, "{}: r_min must be positive", p.name);
         assert!(p.r_max > p.r_min, "{}: r_max must exceed r_min", p.name);
-        assert!(p.friction >= 0.0, "{}: friction must be non-negative", p.name);
-        assert!(p.force_scale > 0.0, "{}: force_scale must be positive", p.name);
+        assert!(
+            p.friction >= 0.0,
+            "{}: friction must be non-negative",
+            p.name
+        );
+        assert!(
+            p.force_scale > 0.0,
+            "{}: force_scale must be positive",
+            p.name
+        );
         assert!(
             p.species_count >= 1 && p.species_count <= 8,
             "{}: species_count {} out of range [1, 8]",
@@ -214,8 +225,16 @@ mod tests {
             p.attraction.len(),
             p.species_count * p.species_count
         );
-        assert!(p.world_width > 0.0, "{}: world_width must be positive", p.name);
-        assert!(p.world_height > 0.0, "{}: world_height must be positive", p.name);
+        assert!(
+            p.world_width > 0.0,
+            "{}: world_width must be positive",
+            p.name
+        );
+        assert!(
+            p.world_height > 0.0,
+            "{}: world_height must be positive",
+            p.name
+        );
     }
 
     #[test]

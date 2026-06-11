@@ -63,9 +63,7 @@ impl WgpuState {
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
-        let immediate_supported = caps
-            .present_modes
-            .contains(&wgpu::PresentMode::Immediate);
+        let immediate_supported = caps.present_modes.contains(&wgpu::PresentMode::Immediate);
 
         let size = window.inner_size();
         let surface_config = wgpu::SurfaceConfiguration {
