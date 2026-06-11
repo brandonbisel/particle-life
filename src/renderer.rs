@@ -111,9 +111,7 @@ impl WgpuState {
 
         let particle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Particle Shader"),
-            source: wgpu::ShaderSource::Wgsl(
-                include_str!("shaders/particle.wgsl").into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/particle.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -144,36 +142,35 @@ impl WgpuState {
             ],
         };
 
-        let particle_pipeline =
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("Particle Pipeline"),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &particle_shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[vertex_buf_layout],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &particle_shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview: None,
-                cache: None,
-            });
+        let particle_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Particle Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &particle_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[vertex_buf_layout],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &particle_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
 
         let state = Self {
             device,
@@ -200,7 +197,13 @@ impl WgpuState {
         // globals are updated at the start of each render() call
     }
 
-    fn update_globals(&self, camera_center: [f32; 2], shader_zoom: f32, world_aspect: f32, particle_radius_norm: f32) {
+    fn update_globals(
+        &self,
+        camera_center: [f32; 2],
+        shader_zoom: f32,
+        world_aspect: f32,
+        particle_radius_norm: f32,
+    ) {
         self.queue.write_buffer(
             &self.globals_buf,
             0,
@@ -229,16 +232,25 @@ impl WgpuState {
         shader_zoom: f32,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("Frame") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Frame"),
+            });
 
         self.particle_radius = sim.particle_radius;
         let world_aspect = sim.world_aspect();
         let particle_radius_norm = sim.particle_radius / sim.world_height;
-        self.update_globals(camera_center, shader_zoom, world_aspect, particle_radius_norm);
+        self.update_globals(
+            camera_center,
+            shader_zoom,
+            world_aspect,
+            particle_radius_norm,
+        );
 
         sim.dispatch(&mut encoder, &self.queue, dt);
 
@@ -317,8 +329,11 @@ impl WgpuState {
         }
 
         // extra_cmds (staging uploads) must precede the main encoder.
-        self.queue
-            .submit(extra_cmds.into_iter().chain(std::iter::once(encoder.finish())));
+        self.queue.submit(
+            extra_cmds
+                .into_iter()
+                .chain(std::iter::once(encoder.finish())),
+        );
         output.present();
 
         Ok(())

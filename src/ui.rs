@@ -5,20 +5,20 @@
 
 use std::collections::VecDeque;
 
+use crate::simulation::{MAX_SPECIES, PALETTE, SimulationState};
 use crate::{benchmark, config};
-use crate::simulation::{SimulationState, MAX_SPECIES, PALETTE};
 
 // ── UI response ───────────────────────────────────────────────────────────────
 
 /// Actions requested by the main Particle Life panel.
 #[derive(Default)]
 pub struct UiResponse {
-    pub respawn:       bool,
-    pub randomize:     bool,
+    pub respawn: bool,
+    pub randomize: bool,
     /// Resize world to match the current window dimensions.
-    pub match_win:     bool,
+    pub match_win: bool,
     /// Apply the currently selected preset to the simulation.
-    pub apply_preset:  bool,
+    pub apply_preset: bool,
     /// Open a file dialog to import a preset (caller handles the dialog).
     pub import_preset: bool,
     /// Open a file dialog to export a preset (caller handles the dialog).
@@ -28,9 +28,9 @@ pub struct UiResponse {
 /// Actions requested by the Performance / benchmark panel.
 pub struct BenchmarkPanelResponse {
     /// Start the full benchmark suite.
-    pub start:       bool,
+    pub start: bool,
     /// Export collected results to CSV.
-    pub export_csv:  bool,
+    pub export_csv: bool,
     /// Start a quick single-point benchmark at the current particle count.
     pub start_quick: bool,
 }
@@ -66,12 +66,12 @@ pub fn draw_toolbar(
         .collapsible(false)
         .show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(tool, Tool::Pan,     "Pan");
-                ui.selectable_value(tool, Tool::ZoomIn,  "Zoom +");
+                ui.selectable_value(tool, Tool::Pan, "Pan");
+                ui.selectable_value(tool, Tool::ZoomIn, "Zoom +");
                 ui.selectable_value(tool, Tool::ZoomOut, "Zoom -");
                 ui.selectable_value(tool, Tool::Attract, "Attract");
-                ui.selectable_value(tool, Tool::Repel,   "Repel");
-                ui.selectable_value(tool, Tool::Spawn,   "Spawn");
+                ui.selectable_value(tool, Tool::Repel, "Repel");
+                ui.selectable_value(tool, Tool::Spawn, "Spawn");
                 ui.separator();
                 if ui.button("Reset View").clicked() {
                     reset_view = true;
@@ -110,8 +110,8 @@ pub fn draw_toolbar(
                         for i in 0..n_species {
                             let color = species_color(i);
                             let is_sel = *spawn_species == Some(i);
-                            let (rect, resp) =
-                                ui.allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::click());
+                            let (rect, resp) = ui
+                                .allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::click());
                             ui.painter().rect_filled(rect, 3.0, color);
                             if is_sel {
                                 ui.painter().rect_stroke(
@@ -194,8 +194,18 @@ pub fn draw_ui(
 
             ui.label("World size (units):");
             ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut sim.world_width).speed(10.0).range(100.0..=10000.0).prefix("W: "));
-                ui.add(egui::DragValue::new(&mut sim.world_height).speed(10.0).range(100.0..=10000.0).prefix("H: "));
+                ui.add(
+                    egui::DragValue::new(&mut sim.world_width)
+                        .speed(10.0)
+                        .range(100.0..=10000.0)
+                        .prefix("W: "),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut sim.world_height)
+                        .speed(10.0)
+                        .range(100.0..=10000.0)
+                        .prefix("H: "),
+                );
                 if ui.button("Match Window").clicked() {
                     resp.match_win = true;
                 }
@@ -265,9 +275,15 @@ pub fn draw_ui(
                         ui.label(egui::RichText::new(&p.description).weak());
                     }
                     ui.horizontal(|ui| {
-                        if ui.button("Apply").clicked()   { resp.apply_preset  = true; }
-                        if ui.button("Import…").clicked() { resp.import_preset = true; }
-                        if ui.button("Export…").clicked() { resp.export_preset = true; }
+                        if ui.button("Apply").clicked() {
+                            resp.apply_preset = true;
+                        }
+                        if ui.button("Import…").clicked() {
+                            resp.import_preset = true;
+                        }
+                        if ui.button("Export…").clicked() {
+                            resp.export_preset = true;
+                        }
                     });
                 });
 
@@ -323,7 +339,13 @@ pub fn draw_ui(
 }
 
 /// Convert a simulation world coordinate to an egui screen position.
-fn world_to_screen(world: [f32; 2], center: [f32; 2], world_aspect: f32, shader_zoom: f32, rect: egui::Rect) -> egui::Pos2 {
+fn world_to_screen(
+    world: [f32; 2],
+    center: [f32; 2],
+    world_aspect: f32,
+    shader_zoom: f32,
+    rect: egui::Rect,
+) -> egui::Pos2 {
     let sx = (world[0] - center[0]) * world_aspect * shader_zoom * rect.height() + rect.center().x;
     let sy = rect.center().y - (world[1] - center[1]) * shader_zoom * rect.height();
     egui::pos2(sx, sy)
@@ -341,8 +363,8 @@ pub fn draw_world_border(
     border_mode: u32,
 ) {
     let color = match border_mode {
-        1 => egui::Color32::from_rgba_unmultiplied(255, 190,  80, 90), // amber — repel
-        2 => egui::Color32::from_rgba_unmultiplied(255,  90,  90, 90), // red   — static
+        1 => egui::Color32::from_rgba_unmultiplied(255, 190, 80, 90), // amber — repel
+        2 => egui::Color32::from_rgba_unmultiplied(255, 90, 90, 90),  // red   — static
         _ => egui::Color32::from_rgba_unmultiplied(180, 210, 255, 70), // blue  — wrap
     };
 
@@ -370,14 +392,16 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, s
     if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
         return;
     }
-    let Some(cursor) = ctx.input(|i| i.pointer.hover_pos()) else { return };
+    let Some(cursor) = ctx.input(|i| i.pointer.hover_pos()) else {
+        return;
+    };
 
     let screen_radius = tool_range * shader_zoom * ctx.screen_rect().height();
 
     let (r, g, b) = match tool {
         Tool::Attract => (100u8, 200u8, 255u8),
-        Tool::Repel   => (255u8, 100u8, 100u8),
-        Tool::Spawn   => (100u8, 255u8, 130u8),
+        Tool::Repel => (255u8, 100u8, 100u8),
+        Tool::Spawn => (100u8, 255u8, 130u8),
         _ => unreachable!(),
     };
 
@@ -415,7 +439,11 @@ pub fn draw_perf_overlay(
     quick_bench: &benchmark::QuickBench,
     runner: &benchmark::BenchmarkRunner,
 ) -> BenchmarkPanelResponse {
-    let mut resp = BenchmarkPanelResponse { start: false, export_csv: false, start_quick: false };
+    let mut resp = BenchmarkPanelResponse {
+        start: false,
+        export_csv: false,
+        start_quick: false,
+    };
 
     let n = frame_times.len();
     if n == 0 {
@@ -444,7 +472,11 @@ pub fn draw_perf_overlay(
                 .min_col_width(60.0)
                 .show(ui, |ui| {
                     ui.label("FPS");
-                    ui.label(format!("{:>5.0}  avg {:>5.0}", 1.0 / latest_dt, 1.0 / avg_dt));
+                    ui.label(format!(
+                        "{:>5.0}  avg {:>5.0}",
+                        1.0 / latest_dt,
+                        1.0 / avg_dt
+                    ));
                     ui.end_row();
 
                     ui.label("Frame");
@@ -478,13 +510,23 @@ pub fn draw_perf_overlay(
                     .num_columns(2)
                     .min_col_width(60.0)
                     .show(ui, |ui| {
-                        ui.label("Avg FPS"); ui.label(format!("{avg:.0}")); ui.end_row();
-                        ui.label("Min FPS"); ui.label(format!("{min:.0}")); ui.end_row();
-                        ui.label("Max FPS"); ui.label(format!("{max:.0}")); ui.end_row();
+                        ui.label("Avg FPS");
+                        ui.label(format!("{avg:.0}"));
+                        ui.end_row();
+                        ui.label("Min FPS");
+                        ui.label(format!("{min:.0}"));
+                        ui.end_row();
+                        ui.label("Max FPS");
+                        ui.label(format!("{max:.0}"));
+                        ui.end_row();
                     });
-                if ui.button("Run Again").clicked() { resp.start_quick = true; }
+                if ui.button("Run Again").clicked() {
+                    resp.start_quick = true;
+                }
             } else {
-                if ui.button("Quick Bench").clicked() { resp.start_quick = true; }
+                if ui.button("Quick Bench").clicked() {
+                    resp.start_quick = true;
+                }
             }
 
             ui.separator();
@@ -497,18 +539,25 @@ pub fn draw_perf_overlay(
                         if let Some((done, total, frame, target, is_warmup)) = runner.progress() {
                             let phase = if is_warmup { "Warmup" } else { "Collecting" };
                             ui.label(format!("Combo {}/{} — {}", done + 1, total, phase));
-                            ui.add(egui::ProgressBar::new(frame as f32 / target as f32).show_percentage());
+                            ui.add(
+                                egui::ProgressBar::new(frame as f32 / target as f32)
+                                    .show_percentage(),
+                            );
                         }
                     } else if runner.is_done() {
                         ui.label(format!("{} results ready", runner.results.len()));
-                        if ui.button("Export CSV…").clicked() { resp.export_csv = true; }
+                        if ui.button("Export CSV…").clicked() {
+                            resp.export_csv = true;
+                        }
                     } else {
                         ui.label(format!(
                             "{} combos (4 presets × {} tiers)",
                             benchmark::BenchmarkRunner::num_combos(),
                             benchmark::BENCHMARK_TIERS.len(),
                         ));
-                        if ui.button("Start Suite").clicked() { resp.start = true; }
+                        if ui.button("Start Suite").clicked() {
+                            resp.start = true;
+                        }
                     }
                 });
         });

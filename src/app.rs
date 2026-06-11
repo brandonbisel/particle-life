@@ -23,13 +23,16 @@ use crate::{benchmark, config, renderer::WgpuState, simulation::SimulationState,
 
 #[derive(Clone, Copy)]
 struct Camera {
-    center:      [f32; 2], // world-space point at screen center (normalized [0,1]²)
-    zoom_factor: f32,      // 1.0 = world fits viewport; 2.0 = 2× zoom in
+    center: [f32; 2], // world-space point at screen center (normalized [0,1]²)
+    zoom_factor: f32, // 1.0 = world fits viewport; 2.0 = 2× zoom in
 }
 
 impl Camera {
     fn default_view() -> Self {
-        Self { center: [0.5, 0.5], zoom_factor: 1.0 }
+        Self {
+            center: [0.5, 0.5],
+            zoom_factor: 1.0,
+        }
     }
 }
 
@@ -38,7 +41,7 @@ fn compute_fit_zoom(world_w: f32, world_h: f32, vp_w: u32, vp_h: u32) -> f32 {
     let vw = vp_w as f32;
     let vh = vp_h as f32;
     let world_aspect = world_w / world_h;
-    let vp_aspect    = vw / vh;
+    let vp_aspect = vw / vh;
     // zoom=1 fills screen height; scale down if world is wider than viewport
     (vp_aspect / world_aspect).min(1.0)
 }
@@ -52,7 +55,7 @@ fn screen_to_world(
     shader_zoom: f32,
 ) -> [f32; 2] {
     let vp_aspect = viewport.width as f32 / viewport.height as f32;
-    let ndc_x = (px.x as f32 / viewport.width  as f32) * 2.0 - 1.0;
+    let ndc_x = (px.x as f32 / viewport.width as f32) * 2.0 - 1.0;
     let ndc_y = 1.0 - (px.y as f32 / viewport.height as f32) * 2.0;
     [
         ndc_x * vp_aspect / (world_aspect * shader_zoom * 2.0) + cam.center[0],
@@ -96,7 +99,7 @@ struct AppState {
 
     // Spawn tool state
     spawn_species: Option<usize>, // None = random species per particle
-    spawn_rate:    u32,           // particles spawned per frame while LMB held
+    spawn_rate: u32,              // particles spawned per frame while LMB held
 
     // Presets + persistence
     preset_library: Vec<config::Preset>,
@@ -153,7 +156,14 @@ impl ApplicationHandler for AppHandler {
             (size.width as f32, size.height as f32)
         };
 
-        let mut sim = SimulationState::new(renderer.device(), renderer.queue(), 1000, 6, world_width, world_height);
+        let mut sim = SimulationState::new(
+            renderer.device(),
+            renderer.queue(),
+            1000,
+            6,
+            world_width,
+            world_height,
+        );
         if let Some(ref p) = session {
             sim.apply_preset(renderer.queue(), p);
         }
@@ -215,11 +225,12 @@ impl ApplicationHandler for AppHandler {
                 return;
             }
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Escape),
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 if let Some(ref s) = self.state {
@@ -232,7 +243,9 @@ impl ApplicationHandler for AppHandler {
             _ => {}
         }
 
-        let Some(state) = self.state.as_mut() else { return };
+        let Some(state) = self.state.as_mut() else {
+            return;
+        };
 
         let window = Arc::clone(&state.window);
         let resp = state.egui_state.on_window_event(&window, &event);
@@ -241,8 +254,10 @@ impl ApplicationHandler for AppHandler {
             WindowEvent::Resized(size) => {
                 state.renderer.resize(size);
                 state.fit_zoom = compute_fit_zoom(
-                    state.sim.world_width, state.sim.world_height,
-                    size.width, size.height,
+                    state.sim.world_width,
+                    state.sim.world_height,
+                    size.width,
+                    size.height,
                 );
             }
 
@@ -251,7 +266,7 @@ impl ApplicationHandler for AppHandler {
 
                 if state.lmb_panning || state.mmb_panning {
                     let vp = window.inner_size();
-                    let shader_zoom  = state.camera.zoom_factor * state.fit_zoom;
+                    let shader_zoom = state.camera.zoom_factor * state.fit_zoom;
                     let world_aspect = state.sim.world_aspect();
                     state.camera.center = [
                         state.pan_start_center[0]
@@ -267,7 +282,11 @@ impl ApplicationHandler for AppHandler {
                 }
             }
 
-            WindowEvent::MouseInput { button, state: btn_state, .. } => {
+            WindowEvent::MouseInput {
+                button,
+                state: btn_state,
+                ..
+            } => {
                 match (button, btn_state) {
                     (MouseButton::Left, ElementState::Pressed) => {
                         state.lmb_down = true;
@@ -280,12 +299,24 @@ impl ApplicationHandler for AppHandler {
                                 }
                                 ui::Tool::ZoomIn => {
                                     let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(state.cursor_px, window.inner_size(), &state.camera, state.sim.world_aspect(), sz);
+                                    let cw = screen_to_world(
+                                        state.cursor_px,
+                                        window.inner_size(),
+                                        &state.camera,
+                                        state.sim.world_aspect(),
+                                        sz,
+                                    );
                                     apply_zoom(&mut state.camera, cw, 1.5);
                                 }
                                 ui::Tool::ZoomOut => {
                                     let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(state.cursor_px, window.inner_size(), &state.camera, state.sim.world_aspect(), sz);
+                                    let cw = screen_to_world(
+                                        state.cursor_px,
+                                        window.inner_size(),
+                                        &state.camera,
+                                        state.sim.world_aspect(),
+                                        sz,
+                                    );
                                     apply_zoom(&mut state.camera, cw, 1.0 / 1.5);
                                 }
                                 _ => {} // attract / repel / spawn handled each frame in RedrawRequested
@@ -328,7 +359,13 @@ impl ApplicationHandler for AppHandler {
                     if lines.abs() > 0.001 {
                         let factor = 1.15_f32.powf(lines);
                         let sz = state.camera.zoom_factor * state.fit_zoom;
-                        let cw = screen_to_world(state.cursor_px, window.inner_size(), &state.camera, state.sim.world_aspect(), sz);
+                        let cw = screen_to_world(
+                            state.cursor_px,
+                            window.inner_size(),
+                            &state.camera,
+                            state.sim.world_aspect(),
+                            sz,
+                        );
                         apply_zoom(&mut state.camera, cw, factor);
                     }
                 }
@@ -336,11 +373,12 @@ impl ApplicationHandler for AppHandler {
 
             // Keyboard shortcuts: arrows = pan, +/- = zoom, 0 = reset view.
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } => {
                 if !resp.consumed {
@@ -367,12 +405,24 @@ impl ApplicationHandler for AppHandler {
                             match c.as_str() {
                                 "=" | "+" => {
                                     let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(mid, vp, &state.camera, state.sim.world_aspect(), sz);
+                                    let cw = screen_to_world(
+                                        mid,
+                                        vp,
+                                        &state.camera,
+                                        state.sim.world_aspect(),
+                                        sz,
+                                    );
                                     apply_zoom(&mut state.camera, cw, 1.5);
                                 }
                                 "-" => {
                                     let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(mid, vp, &state.camera, state.sim.world_aspect(), sz);
+                                    let cw = screen_to_world(
+                                        mid,
+                                        vp,
+                                        &state.camera,
+                                        state.sim.world_aspect(),
+                                        sz,
+                                    );
                                     apply_zoom(&mut state.camera, cw, 1.0 / 1.5);
                                 }
                                 "0" => state.camera = Camera::default_view(),
@@ -398,36 +448,52 @@ impl ApplicationHandler for AppHandler {
 
                 // Explicitly split field borrows so the closure can see sim + frame_times
                 // while egui_ctx is also borrowed.
-                let cam_center   = state.camera.center;
-                let shader_zoom  = state.camera.zoom_factor * state.fit_zoom;
+                let cam_center = state.camera.center;
+                let shader_zoom = state.camera.zoom_factor * state.fit_zoom;
                 let world_aspect = state.sim.world_aspect();
 
                 let (full_output, ui_resp, bench_resp, should_reset_view) = {
-                    let egui_ctx        = &state.egui_ctx;
-                    let sim             = &mut state.sim;
-                    let frame_times     = &state.frame_times;
-                    let tool            = &mut state.tool;
-                    let tool_range      = &mut state.tool_range;
-                    let mouse_strength  = &mut state.mouse_strength;
-                    let spawn_species   = &mut state.spawn_species;
-                    let spawn_rate      = &mut state.spawn_rate;
-                    let n_species       = sim.species_count;
-                    let border_mode     = sim.border_mode;
-                    let preset_library  = &state.preset_library;
+                    let egui_ctx = &state.egui_ctx;
+                    let sim = &mut state.sim;
+                    let frame_times = &state.frame_times;
+                    let tool = &mut state.tool;
+                    let tool_range = &mut state.tool_range;
+                    let mouse_strength = &mut state.mouse_strength;
+                    let spawn_species = &mut state.spawn_species;
+                    let spawn_rate = &mut state.spawn_rate;
+                    let n_species = sim.species_count;
+                    let border_mode = sim.border_mode;
+                    let preset_library = &state.preset_library;
                     let selected_preset = &mut state.selected_preset;
-                    let benchmark       = &state.benchmark;
-                    let quick_bench     = &state.quick_bench;
-                    let mut ui_r        = ui::UiResponse::default();
-                    let mut bench_r     = ui::BenchmarkPanelResponse { start: false, export_csv: false, start_quick: false };
-                    let mut reset_view  = false;
+                    let benchmark = &state.benchmark;
+                    let quick_bench = &state.quick_bench;
+                    let mut ui_r = ui::UiResponse::default();
+                    let mut bench_r = ui::BenchmarkPanelResponse {
+                        start: false,
+                        export_csv: false,
+                        start_quick: false,
+                    };
+                    let mut reset_view = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r    = ui::draw_ui(ctx, sim, preset_library, selected_preset);
-                        bench_r = ui::draw_perf_overlay(ctx, frame_times, sim, quick_bench, benchmark);
+                        ui_r = ui::draw_ui(ctx, sim, preset_library, selected_preset);
+                        bench_r =
+                            ui::draw_perf_overlay(ctx, frame_times, sim, quick_bench, benchmark);
                         reset_view = ui::draw_toolbar(
-                            ctx, tool, tool_range, mouse_strength,
-                            spawn_species, spawn_rate, n_species,
+                            ctx,
+                            tool,
+                            tool_range,
+                            mouse_strength,
+                            spawn_species,
+                            spawn_rate,
+                            n_species,
                         );
-                        ui::draw_world_border(ctx, cam_center, world_aspect, shader_zoom, border_mode);
+                        ui::draw_world_border(
+                            ctx,
+                            cam_center,
+                            world_aspect,
+                            shader_zoom,
+                            border_mode,
+                        );
                         ui::draw_cursor_indicator(ctx, *tool, *tool_range, shader_zoom);
                     });
                     (out, ui_r, bench_r, reset_view)
@@ -444,11 +510,13 @@ impl ApplicationHandler for AppHandler {
                 }
                 if ui_resp.match_win {
                     let sz = window.inner_size();
-                    state.sim.world_width  = sz.width  as f32;
+                    state.sim.world_width = sz.width as f32;
                     state.sim.world_height = sz.height as f32;
                     state.fit_zoom = compute_fit_zoom(
-                        state.sim.world_width, state.sim.world_height,
-                        sz.width, sz.height,
+                        state.sim.world_width,
+                        state.sim.world_height,
+                        sz.width,
+                        sz.height,
                     );
                 }
                 if ui_resp.apply_preset
@@ -456,8 +524,10 @@ impl ApplicationHandler for AppHandler {
                 {
                     state.sim.apply_preset(state.renderer.queue(), &preset);
                     state.fit_zoom = compute_fit_zoom(
-                        state.sim.world_width, state.sim.world_height,
-                        window.inner_size().width, window.inner_size().height,
+                        state.sim.world_width,
+                        state.sim.world_height,
+                        window.inner_size().width,
+                        window.inner_size().height,
                     );
                 }
                 if ui_resp.import_preset
@@ -478,7 +548,8 @@ impl ApplicationHandler for AppHandler {
                         .add_filter("TOML preset", &["toml"])
                         .set_file_name("preset.toml")
                         .save_file()
-                    && let Err(e) = config::save_preset_file(&state.sim.to_preset("exported"), &path)
+                    && let Err(e) =
+                        config::save_preset_file(&state.sim.to_preset("exported"), &path)
                 {
                     log::warn!("Export failed: {e}");
                 }
@@ -487,7 +558,12 @@ impl ApplicationHandler for AppHandler {
                 if bench_resp.start {
                     let sz = window.inner_size();
                     let action = state.benchmark.start(sz.width, sz.height);
-                    Self::handle_benchmark_action(&mut state.sim, &state.renderer, action, &state.benchmark);
+                    Self::handle_benchmark_action(
+                        &mut state.sim,
+                        &state.renderer,
+                        action,
+                        &state.benchmark,
+                    );
                 }
                 if bench_resp.export_csv
                     && let Some(path) = rfd::FileDialog::new()
@@ -500,7 +576,12 @@ impl ApplicationHandler for AppHandler {
                 }
                 if state.benchmark.is_running() {
                     let action = state.benchmark.advance(dt);
-                    Self::handle_benchmark_action(&mut state.sim, &state.renderer, action, &state.benchmark);
+                    Self::handle_benchmark_action(
+                        &mut state.sim,
+                        &state.renderer,
+                        action,
+                        &state.benchmark,
+                    );
                 }
 
                 // Quick bench
@@ -508,25 +589,40 @@ impl ApplicationHandler for AppHandler {
                     state.quick_bench.start(state.sim.particle_count_gpu());
                 }
                 if state.quick_bench.is_running() {
-                    state.quick_bench.advance(dt, state.sim.particle_count_gpu());
+                    state
+                        .quick_bench
+                        .advance(dt, state.sim.particle_count_gpu());
                 }
 
                 // Apply active tool effects to sim mouse state before dispatch.
                 let vp = window.inner_size();
-                let world = screen_to_world(state.cursor_px, vp, &state.camera, world_aspect, shader_zoom);
+                let world = screen_to_world(
+                    state.cursor_px,
+                    vp,
+                    &state.camera,
+                    world_aspect,
+                    shader_zoom,
+                );
                 state.sim.mouse_x = world[0];
                 state.sim.mouse_y = world[1];
                 state.sim.mouse_range = state.tool_range;
                 state.sim.mouse_strength = match state.tool {
-                    ui::Tool::Attract if state.lmb_down =>  state.mouse_strength,
-                    ui::Tool::Repel   if state.lmb_down => -state.mouse_strength,
+                    ui::Tool::Attract if state.lmb_down => state.mouse_strength,
+                    ui::Tool::Repel if state.lmb_down => -state.mouse_strength,
                     _ => 0.0,
                 };
                 if matches!(state.tool, ui::Tool::Spawn) && state.lmb_down {
-                    let queue         = state.renderer.queue();
+                    let queue = state.renderer.queue();
                     let spawn_species = state.spawn_species;
-                    let spawn_rate    = state.spawn_rate;
-                    state.sim.spawn_particles(queue, world, state.tool_range, spawn_species, world_aspect, spawn_rate);
+                    let spawn_rate = state.spawn_rate;
+                    state.sim.spawn_particles(
+                        queue,
+                        world,
+                        state.tool_range,
+                        spawn_species,
+                        world_aspect,
+                        spawn_rate,
+                    );
                 }
 
                 let egui::FullOutput {
@@ -537,7 +633,9 @@ impl ApplicationHandler for AppHandler {
                     ..
                 } = full_output;
 
-                state.egui_state.handle_platform_output(&window, platform_output);
+                state
+                    .egui_state
+                    .handle_platform_output(&window, platform_output);
                 let paint_jobs = state.egui_ctx.tessellate(shapes, pixels_per_point);
 
                 match state.renderer.render(
@@ -583,7 +681,7 @@ impl AppHandler {
             let preset = benchmark::BenchmarkRunner::combo_preset(combo);
             sim.apply_preset(renderer.queue(), &preset);
             // Override world size to match benchmark viewport for consistent results
-            sim.world_width  = runner.vp_width  as f32;
+            sim.world_width = runner.vp_width as f32;
             sim.world_height = runner.vp_height as f32;
         }
     }
