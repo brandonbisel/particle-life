@@ -461,6 +461,7 @@ impl ApplicationHandler for AppHandler {
                                     apply_zoom(&mut state.camera, cw, 1.0 / 1.5);
                                 }
                                 "0" => state.camera = Camera::default_view(),
+                                "r" => state.sim.respawn(state.renderer.queue()),
                                 _ => {}
                             }
                         }

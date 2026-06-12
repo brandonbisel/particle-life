@@ -4,6 +4,8 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 
 ![Particle Life](https://img.shields.io/badge/language-Rust-orange) ![GPU](https://img.shields.io/badge/GPU-wgpu%2024-blue) ![UI](https://img.shields.io/badge/UI-egui%200.31-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen) ![CI](https://github.com/brandonbisel/particle-life/actions/workflows/ci.yml/badge.svg?branch=dev)
 
+![Particle Life simulation](assets/hero.gif)
+
 ## Features
 
 - **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
@@ -16,6 +18,19 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 - **Preset system** — save, load, and import/export TOML presets; four built-in presets included
 - **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
 - **Performance overlay:** FPS, frame time min/max/avg, grid stats, VSync toggle
+
+## Gallery
+
+<table>
+  <tr>
+    <td align="center"><img src="assets/preset-clusters.png" width="420"/><br><b>Clusters</b> — like attracts like</td>
+    <td align="center"><img src="assets/preset-chains.png" width="420"/><br><b>Chains</b> — predator-prey spirals</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/preset-ecosystem.png" width="420"/><br><b>Ecosystem</b> — chain hunts a cluster</td>
+    <td align="center"><img src="assets/preset-symbiosis.png" width="420"/><br><b>Symbiosis</b> — cross-species mixing</td>
+  </tr>
+</table>
 
 ## How It Works
 
@@ -94,6 +109,7 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
 | `0` | Reset view |
+| `R` | Respawn particles |
 | `F11` | Toggle fullscreen |
 | `Escape` | Quit |
 
