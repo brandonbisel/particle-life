@@ -683,6 +683,9 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, s
     if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
         return;
     }
+    if ctx.is_pointer_over_area() {
+        return;
+    }
     let Some(cursor) = ctx.input(|i| i.pointer.hover_pos()) else {
         return;
     };

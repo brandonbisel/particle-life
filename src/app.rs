@@ -710,10 +710,19 @@ impl ApplicationHandler for AppHandler {
                     .egui_state
                     .handle_platform_output(&window, platform_output);
 
-                // Apply the tool cursor only when egui isn't requesting its own.
+                // When egui wants Default (non-interactive area, panel background, canvas):
+                // explicitly set either the tool cursor or Default. The explicit reset is
+                // required because egui-winit deduplicates cursor calls — if egui keeps
+                // emitting Default frame-over-frame, handle_platform_output skips
+                // window.set_cursor(), leaving the tool cursor from the previous frame stuck.
                 if egui_cursor == egui::CursorIcon::Default {
                     let panning = state.lmb_panning || state.mmb_panning;
-                    window.set_cursor(tool_cursor(state.tool, panning));
+                    let cursor = if state.egui_ctx.is_pointer_over_area() {
+                        CursorIcon::Default
+                    } else {
+                        tool_cursor(state.tool, panning)
+                    };
+                    window.set_cursor(cursor);
                 }
                 let paint_jobs = state.egui_ctx.tessellate(shapes, pixels_per_point);
 
