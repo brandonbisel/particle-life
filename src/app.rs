@@ -14,7 +14,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::ActiveEventLoop,
     keyboard::{Key, NamedKey},
-    window::{Fullscreen, Window, WindowId},
+    window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
 use crate::{benchmark, config, icon, renderer::WgpuState, simulation::SimulationState, ui};
@@ -113,6 +113,7 @@ struct AppState {
     // Mouse tracking
     cursor_px: PhysicalPosition<f64>,
     lmb_down: bool,
+    lmb_egui: bool, // true while LMB is held and the press was consumed by egui
 
     // Pan drag state (LMB+Pan tool or MMB)
     lmb_panning: bool,
@@ -184,6 +185,7 @@ impl ApplicationHandler for AppHandler {
         if let Some(ref p) = session {
             sim.apply_preset(renderer.queue(), p);
         }
+        renderer.update_palette(&sim.palette);
         let fit_zoom = compute_fit_zoom(world_width, world_height, size.width, size.height);
 
         let egui_ctx = egui::Context::default();
@@ -220,6 +222,7 @@ impl ApplicationHandler for AppHandler {
             spawn_rate: 50,
             cursor_px: PhysicalPosition::new(0.0, 0.0),
             lmb_down: false,
+            lmb_egui: false,
             lmb_panning: false,
             mmb_panning: false,
             pan_start_px: PhysicalPosition::new(0.0, 0.0),
@@ -311,6 +314,7 @@ impl ApplicationHandler for AppHandler {
                 match (button, btn_state) {
                     (MouseButton::Left, ElementState::Pressed) => {
                         state.lmb_down = true;
+                        state.lmb_egui = resp.consumed;
                         if !resp.consumed {
                             match state.tool {
                                 ui::Tool::Pan => {
@@ -346,6 +350,7 @@ impl ApplicationHandler for AppHandler {
                     }
                     (MouseButton::Left, ElementState::Released) => {
                         state.lmb_down = false;
+                        state.lmb_egui = false;
                         state.lmb_panning = false;
                         // If MMB is still panning, re-anchor so the transition is smooth.
                         if state.mmb_panning {
@@ -529,6 +534,7 @@ impl ApplicationHandler for AppHandler {
                             spawn_species,
                             spawn_rate,
                             n_species,
+                            &sim.palette,
                         );
                         ui::draw_world_border(
                             ctx,
@@ -547,6 +553,12 @@ impl ApplicationHandler for AppHandler {
                 }
                 if ui_resp.randomize {
                     state.sim.randomize_attraction();
+                }
+                if ui_resp.randomize_palette {
+                    state.sim.randomize_palette();
+                }
+                if ui_resp.palette_changed || ui_resp.randomize_palette {
+                    state.renderer.update_palette(&state.sim.palette);
                 }
                 if should_reset_view {
                     state.camera = Camera::default_view();
@@ -663,12 +675,13 @@ impl ApplicationHandler for AppHandler {
                 state.sim.mouse_x = world[0];
                 state.sim.mouse_y = world[1];
                 state.sim.mouse_range = state.tool_range;
+                let sim_lmb = state.lmb_down && !state.lmb_egui;
                 state.sim.mouse_strength = match state.tool {
-                    ui::Tool::Attract if state.lmb_down => state.mouse_strength,
-                    ui::Tool::Repel if state.lmb_down => -state.mouse_strength,
+                    ui::Tool::Attract if sim_lmb => state.mouse_strength,
+                    ui::Tool::Repel if sim_lmb => -state.mouse_strength,
                     _ => 0.0,
                 };
-                if matches!(state.tool, ui::Tool::Spawn) && state.lmb_down {
+                if matches!(state.tool, ui::Tool::Spawn) && sim_lmb {
                     let queue = state.renderer.queue();
                     let spawn_species = state.spawn_species;
                     let spawn_rate = state.spawn_rate;
@@ -690,9 +703,27 @@ impl ApplicationHandler for AppHandler {
                     ..
                 } = full_output;
 
+                // Read egui's cursor intent before the move so we can decide
+                // whether to override it with the tool cursor below.
+                let egui_cursor = platform_output.cursor_icon;
                 state
                     .egui_state
                     .handle_platform_output(&window, platform_output);
+
+                // When egui wants Default (non-interactive area, panel background, canvas):
+                // explicitly set either the tool cursor or Default. The explicit reset is
+                // required because egui-winit deduplicates cursor calls — if egui keeps
+                // emitting Default frame-over-frame, handle_platform_output skips
+                // window.set_cursor(), leaving the tool cursor from the previous frame stuck.
+                if egui_cursor == egui::CursorIcon::Default {
+                    let panning = state.lmb_panning || state.mmb_panning;
+                    let cursor = if state.egui_ctx.is_pointer_over_area() {
+                        CursorIcon::Default
+                    } else {
+                        tool_cursor(state.tool, panning)
+                    };
+                    window.set_cursor(cursor);
+                }
                 let paint_jobs = state.egui_ctx.tessellate(shapes, pixels_per_point);
 
                 match state.renderer.render(
@@ -722,6 +753,23 @@ impl ApplicationHandler for AppHandler {
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn tool_cursor(tool: ui::Tool, panning: bool) -> CursorIcon {
+    match tool {
+        ui::Tool::Pan => {
+            if panning {
+                CursorIcon::Grabbing
+            } else {
+                CursorIcon::Grab
+            }
+        }
+        ui::Tool::ZoomIn => CursorIcon::ZoomIn,
+        ui::Tool::ZoomOut => CursorIcon::ZoomOut,
+        ui::Tool::Attract | ui::Tool::Repel | ui::Tool::Spawn => CursorIcon::Crosshair,
     }
 }
 

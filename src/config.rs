@@ -39,6 +39,9 @@ pub struct Preset {
     pub border_repel_strength: f32,
     /// Row-major `species_count × species_count` attraction matrix; values in `[-1, 1]`.
     pub attraction: Vec<f32>,
+    /// Per-species packed sRGB colours (`0xFF_BB_GG_RR`). Optional; absent means use default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub palette: Option<Vec<u32>>,
 }
 
 impl Preset {
@@ -58,6 +61,7 @@ impl Preset {
             border_mode: 0,
             border_repel_strength: 5.0,
             attraction,
+            palette: None,
         }
     }
 }
