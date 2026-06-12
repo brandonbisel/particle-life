@@ -144,6 +144,32 @@ fn symbiosis() -> Preset {
     )
 }
 
+// ── Bundled presets (TOML files embedded at compile time) ─────────────────────
+
+/// Returns presets embedded from `assets/presets/*.toml` at compile time.
+pub fn bundled_presets() -> Vec<Preset> {
+    let sources: &[(&str, &str)] = &[
+        (
+            "Snakes and Stripes",
+            include_str!("../assets/presets/Snakes and Stripes.toml"),
+        ),
+        (
+            "Snakes Rings Ships",
+            include_str!("../assets/presets/Snakes Rings Ships.toml"),
+        ),
+    ];
+    sources
+        .iter()
+        .filter_map(|(name, src)| match toml::from_str::<Preset>(src) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::warn!("Bundled preset '{name}' failed to parse: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
 /// Parse a TOML preset from `path`.
@@ -170,12 +196,24 @@ pub fn load_presets_dir() -> Vec<Preset> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().map(|e| e == "toml").unwrap_or(false))
+        .filter(|p| {
+            !p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('_'))
+        })
         .collect();
     paths.sort();
     paths
         .iter()
         .filter_map(|p| match load_preset_file(p) {
-            Ok(preset) => Some(preset),
+            Ok(mut preset) => {
+                if (preset.name == "exported" || preset.name.is_empty())
+                    && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                {
+                    preset.name = stem.to_string();
+                }
+                Some(preset)
+            }
             Err(e) => {
                 log::warn!("Skipping {p:?}: {e}");
                 None

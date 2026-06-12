@@ -4,7 +4,7 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 
 ![Particle Life](https://img.shields.io/badge/language-Rust-orange) ![GPU](https://img.shields.io/badge/GPU-wgpu%2024-blue) ![UI](https://img.shields.io/badge/UI-egui%200.31-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen) ![CI](https://github.com/brandonbisel/particle-life/actions/workflows/ci.yml/badge.svg?branch=dev)
 
-![Particle Life simulation](assets/hero.gif)
+![Particle Life simulation](assets/images/hero.gif)
 
 ## Features
 
@@ -23,12 +23,12 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 
 <table>
   <tr>
-    <td align="center"><img src="assets/preset-clusters.png" width="420"/><br><b>Clusters</b> — like attracts like</td>
-    <td align="center"><img src="assets/preset-chains.png" width="420"/><br><b>Chains</b> — predator-prey spirals</td>
+    <td align="center"><img src="assets/images/preset-clusters.png" width="420"/><br><b>Clusters</b> — like attracts like</td>
+    <td align="center"><img src="assets/images/preset-chains.png" width="420"/><br><b>Chains</b> — predator-prey spirals</td>
   </tr>
   <tr>
-    <td align="center"><img src="assets/preset-ecosystem.png" width="420"/><br><b>Ecosystem</b> — chain hunts a cluster</td>
-    <td align="center"><img src="assets/preset-symbiosis.png" width="420"/><br><b>Symbiosis</b> — cross-species mixing</td>
+    <td align="center"><img src="assets/images/preset-ecosystem.png" width="420"/><br><b>Ecosystem</b> — chain hunts a cluster</td>
+    <td align="center"><img src="assets/images/preset-symbiosis.png" width="420"/><br><b>Symbiosis</b> — cross-species mixing</td>
   </tr>
 </table>
 

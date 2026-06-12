@@ -412,6 +412,143 @@ impl WgpuState {
         Ok(())
     }
 
+    /// Render the current particle state to an offscreen texture and return PNG bytes.
+    ///
+    /// Does not advance the simulation (no dispatch) — captures whatever is already on the GPU.
+    /// The PNG is RGBA 8-bit, sized to the current surface dimensions.
+    pub fn capture_png(
+        &self,
+        sim: &SimulationState,
+        camera_center: [f32; 2],
+        shader_zoom: f32,
+    ) -> Vec<u8> {
+        let width = self.surface_config.width;
+        let height = self.surface_config.height;
+
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Screenshot"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // wgpu requires row strides to be aligned to COPY_BYTES_PER_ROW_ALIGNMENT.
+        let bytes_per_pixel = 4u32;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let unpadded_row = bytes_per_pixel * width;
+        let padded_row = unpadded_row.div_ceil(align) * align;
+
+        let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Screenshot Staging"),
+            size: (padded_row * height) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let world_aspect = sim.world_aspect();
+        let particle_radius_norm = sim.particle_radius / sim.world_height;
+        self.update_globals(camera_center, shader_zoom, world_aspect, particle_radius_norm);
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Screenshot"),
+            });
+
+        {
+            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Screenshot Particle Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.01,
+                            g: 0.01,
+                            b: 0.02,
+                            a: 1.0,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            rpass.set_pipeline(&self.particle_pipeline);
+            rpass.set_bind_group(0, &self.globals_bind_group, &[]);
+            rpass.set_vertex_buffer(0, sim.particle_buffer().slice(..));
+            rpass.draw(0..6, 0..sim.particle_count_gpu());
+        }
+
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        self.device.poll(wgpu::Maintain::Wait);
+
+        let mapped = slice.get_mapped_range();
+        let is_bgra = matches!(
+            self.surface_config.format,
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+        );
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for row in 0..height as usize {
+            let start = row * padded_row as usize;
+            let row_bytes = &mapped[start..start + unpadded_row as usize];
+            if is_bgra {
+                for c in row_bytes.chunks_exact(4) {
+                    pixels.extend_from_slice(&[c[2], c[1], c[0], c[3]]);
+                }
+            } else {
+                pixels.extend_from_slice(row_bytes);
+            }
+        }
+        drop(mapped);
+        staging.unmap();
+
+        let mut png_bytes = Vec::new();
+        let mut enc = png::Encoder::new(&mut png_bytes, width, height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .expect("png header")
+            .write_image_data(&pixels)
+            .expect("png data");
+        png_bytes
+    }
+
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }

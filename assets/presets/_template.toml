@@ -1,0 +1,109 @@
+# Particle Life preset — field reference
+#
+# Copy this file, rename it (the name becomes the default display name), and
+# fill in your values.  Fields marked REQUIRED must be present.  Optional
+# fields can be omitted entirely.
+#
+# Files whose name starts with "_" are ignored by the preset loader.
+
+# ── Identity ──────────────────────────────────────────────────────────────────
+
+# REQUIRED. Display name shown in the preset dropdown.
+name = "My Preset"
+
+# Optional. One-sentence description shown below the dropdown.
+description = ""
+
+# ── World ─────────────────────────────────────────────────────────────────────
+
+# REQUIRED. Total number of particles.  Typical range: 1 000 – 200 000.
+# Higher counts require more VRAM and GPU bandwidth.
+particle_count = 5000
+
+# REQUIRED. Number of distinct species.  Range: 1 – 8.
+species_count = 6
+
+# REQUIRED. World dimensions in simulation units.
+# 1 280 × 720 is a good neutral default (matches 720p).
+# Wider worlds spread particles further; attraction ranges scale with world_height.
+world_width  = 1280.0
+world_height = 720.0
+
+# REQUIRED. Visual radius of each particle, in pixels at 1:1 zoom.
+# 1.0 – 2.0 looks good for most particle counts.
+particle_radius = 1.5
+
+# ── Physics ───────────────────────────────────────────────────────────────────
+
+# REQUIRED. Hard-core repulsion radius, expressed as a fraction of world_height.
+# Particles closer than this distance are pushed apart regardless of attraction.
+# Must be positive and less than r_max.  Typical: 0.02 – 0.04.
+r_min = 0.025
+
+# REQUIRED. Outer interaction cutoff radius, as a fraction of world_height.
+# No force is applied beyond this distance.
+# Must be greater than r_min.  Typical: 0.06 – 0.15.
+r_max = 0.08
+
+# REQUIRED. Velocity damping per frame.  0.0 = no friction (particles coast
+# forever); 1.0 = full stop each frame.  Typical: 0.3 – 0.7.
+friction = 0.5
+
+# REQUIRED. Global force multiplier.  Scales all attraction/repulsion forces.
+# Smaller values → slower, calmer motion.  Typical: 0.005 – 0.015.
+force_scale = 0.007
+
+# ── Border ────────────────────────────────────────────────────────────────────
+
+# REQUIRED. Boundary behaviour:
+#   0 = Wrap   — particles teleport across the opposite edge (toroidal)
+#   1 = Repel  — a spring pushes particles back from the edge
+#   2 = Static — particles stop at the edge (hard wall)
+border_mode = 0
+
+# Strength of the repulsion spring used when border_mode = 1.
+# Ignored for other modes.  Typical: 1.0 – 20.0.
+border_repel_strength = 5.0
+
+# ── Attraction matrix ─────────────────────────────────────────────────────────
+
+# REQUIRED. Row-major species_count × species_count matrix of attraction values.
+# attraction[i * species_count + j] = how strongly species i is attracted to species j.
+#
+# Values range from -1.0 (maximum repulsion) to +1.0 (maximum attraction).
+# 0.0 = no interaction.
+#
+# Row i describes how species i *feels* about every other species.
+# The matrix need not be symmetric: i can be attracted to j while j flees from i.
+#
+# Example for species_count = 2:
+#   attraction = [
+#       0.8, -0.3,   # species 0 → 0: self-attract, → 1: mild repulsion
+#      -0.1,  0.5,   # species 1 → 0: mild repulsion, → 1: self-attract
+#   ]
+attraction = [
+    1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+]
+
+# ── Palette (optional) ────────────────────────────────────────────────────────
+
+# Per-species colours as packed 32-bit integers in 0xAA_BB_GG_RR byte order.
+# Provide exactly species_count values (up to 8).
+# Omit this field entirely to use the application default palette.
+#
+# Tip: export a preset from the app after adjusting colours in the UI —
+# the correct packed values will be written for you automatically.
+#
+# palette = [
+#     0xFF_39_2F_E8,   # species 0 — red-ish
+#     0xFF_FF_94_00,   # species 1 — orange
+#     0xFF_00_E6_76,   # species 2 — green
+#     0xFF_00_B4_FF,   # species 3 — blue
+#     0xFF_C8_6A_FF,   # species 4 — purple
+#     0xFF_FF_2D_9E,   # species 5 — pink
+# ]

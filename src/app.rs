@@ -162,8 +162,9 @@ impl ApplicationHandler for AppHandler {
         let renderer = WgpuState::new(Arc::clone(&window));
         let size = window.inner_size();
 
-        // Build preset library: 4 builtins + any user presets from ./presets/
+        // Build preset library: 4 builtins + embedded bundled + any user presets from ./presets/
         let mut preset_library = config::builtin_presets();
+        preset_library.extend(config::bundled_presets());
         preset_library.extend(config::load_presets_dir());
 
         // Load session or use defaults from first preset
@@ -592,7 +593,12 @@ impl ApplicationHandler for AppHandler {
                         .pick_file()
                 {
                     match config::load_preset_file(&path) {
-                        Ok(preset) => {
+                        Ok(mut preset) => {
+                            if (preset.name == "exported" || preset.name.is_empty())
+                                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                            {
+                                preset.name = stem.to_string();
+                            }
                             state.preset_library.push(preset);
                             state.selected_preset = state.preset_library.len() - 1;
                         }
@@ -604,10 +610,25 @@ impl ApplicationHandler for AppHandler {
                         .add_filter("TOML preset", &["toml"])
                         .set_file_name("preset.toml")
                         .save_file()
-                    && let Err(e) =
-                        config::save_preset_file(&state.sim.to_preset("exported"), &path)
                 {
-                    log::warn!("Export failed: {e}");
+                    let name = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("exported");
+                    if let Err(e) =
+                        config::save_preset_file(&state.sim.to_preset(name), &path)
+                    {
+                        log::warn!("Export failed: {e}");
+                    } else {
+                        let png =
+                            state
+                                .renderer
+                                .capture_png(&state.sim, cam_center, shader_zoom);
+                        let thumb_path = path.with_extension("png");
+                        if let Err(e) = std::fs::write(&thumb_path, &png) {
+                            log::warn!("Thumbnail save failed: {e}");
+                        }
+                    }
                 }
 
                 // Global vsync toggle

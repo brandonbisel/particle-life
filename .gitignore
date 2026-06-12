@@ -19,7 +19,7 @@ Thumbs.db
 
 # App-generated runtime files
 session.toml
-presets/
+/presets/
 
 # Benchmark output CSVs (tracked separately)
 benchmarks/
