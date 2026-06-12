@@ -14,7 +14,7 @@ use winit::{
     event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::ActiveEventLoop,
     keyboard::{Key, NamedKey},
-    window::{Fullscreen, Window, WindowId},
+    window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
 use crate::{benchmark, config, icon, renderer::WgpuState, simulation::SimulationState, ui};
@@ -703,9 +703,18 @@ impl ApplicationHandler for AppHandler {
                     ..
                 } = full_output;
 
+                // Read egui's cursor intent before the move so we can decide
+                // whether to override it with the tool cursor below.
+                let egui_cursor = platform_output.cursor_icon;
                 state
                     .egui_state
                     .handle_platform_output(&window, platform_output);
+
+                // Apply the tool cursor only when egui isn't requesting its own.
+                if egui_cursor == egui::CursorIcon::Default {
+                    let panning = state.lmb_panning || state.mmb_panning;
+                    window.set_cursor(tool_cursor(state.tool, panning));
+                }
                 let paint_jobs = state.egui_ctx.tessellate(shapes, pixels_per_point);
 
                 match state.renderer.render(
@@ -735,6 +744,23 @@ impl ApplicationHandler for AppHandler {
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
         }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn tool_cursor(tool: ui::Tool, panning: bool) -> CursorIcon {
+    match tool {
+        ui::Tool::Pan => {
+            if panning {
+                CursorIcon::Grabbing
+            } else {
+                CursorIcon::Grab
+            }
+        }
+        ui::Tool::ZoomIn => CursorIcon::ZoomIn,
+        ui::Tool::ZoomOut => CursorIcon::ZoomOut,
+        ui::Tool::Attract | ui::Tool::Repel | ui::Tool::Spawn => CursorIcon::Crosshair,
     }
 }
 
