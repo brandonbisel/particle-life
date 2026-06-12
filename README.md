@@ -12,9 +12,10 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
 - **Configurable world size** — independent of window size; zoom/pan always shows the full world at fit
+- **Configurable palette** — five built-in themes (Default, Vivid, Neon, Pastel, Dark), per-species color pickers, and randomize
 - **Preset system** — save, load, and import/export TOML presets; four built-in presets included
-- **Real-time controls:** particle count, species, physics params, matrix randomization
-- **Performance overlay:** FPS, frame time min/max/avg, grid stats
+- **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
+- **Performance overlay:** FPS, frame time min/max/avg, grid stats, VSync toggle
 
 ## How It Works
 
