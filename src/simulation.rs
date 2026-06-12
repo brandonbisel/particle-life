@@ -13,16 +13,22 @@ const MAX_PARTICLES: usize = 500_000;
 // cell = r_max/2, so grid_w = floor(2/r_max); at r_max=0.01 → 200×200 = 40 000 cells.
 const MAX_GRID_CELLS: usize = 40_000;
 
-/// Default species colours as packed `0xAA_BB_GG_RR` u32s (matches the WGSL unpack).
-pub const PALETTE: [u32; 8] = [
-    0xFF3C3CDC, // red
-    0xFF3CDC3C, // green
-    0xFFDC503C, // blue
-    0xFF32C8DC, // yellow
-    0xFFDC32A0, // purple
-    0xFFD2D232, // cyan
-    0xFF3282E6, // orange
-    0xFFB464E6, // pink
+/// Default species colours as packed sRGB `0xFF_BB_GG_RR` u32s.
+///
+/// These are the sRGB-space equivalents of the previous linear values so the
+/// on-screen appearance is identical to the original palette.  Stored as sRGB
+/// so the vertex shader can do a single sRGB→linear conversion and the GPU's
+/// automatic linear→sRGB encoding on the sRGB framebuffer produces the
+/// correct final colour.
+pub const PALETTE_DEFAULT: [u32; 8] = [
+    0xFF8585EF, // salmon-red   sRGB(239, 133, 133)
+    0xFF85EF85, // light-green  sRGB(133, 239, 133)
+    0xFFEF9885, // periwinkle   sRGB(133, 152, 239)
+    0xFF7AE5EF, // pale-yellow  sRGB(239, 229, 122)
+    0xFFEF7AD0, // lavender     sRGB(208, 122, 239)
+    0xFFEAEA7A, // pale-cyan    sRGB(122, 234, 234)
+    0xFF7ABDF4, // peach        sRGB(244, 189, 122)
+    0xFFDBA8F4, // rose-pink    sRGB(244, 168, 219)
 ];
 
 #[repr(C)]
@@ -60,6 +66,8 @@ pub struct SimulationState {
     pub force_scale: f32,
     pub particle_radius: f32,  // world units
     pub attraction: [f32; 64], // row-major 8×8; A[i,j] = attraction[i*8+j]
+    /// Per-species colours as packed sRGB `0xFF_BB_GG_RR` u32s.
+    pub palette: [u32; 8],
     pub paused: bool,
     pub border_mode: u32, // 0 = Wrap, 1 = Repel, 2 = Static
     pub border_repel_strength: f32,
@@ -392,6 +400,7 @@ impl SimulationState {
             force_scale: 0.007,
             particle_radius: 1.5,
             attraction,
+            palette: PALETTE_DEFAULT,
             paused: false,
             border_mode: 0,
             border_repel_strength: 5.0,
@@ -439,7 +448,7 @@ impl SimulationState {
             self.particles.push(Particle {
                 position: [self.rng.next_f32(), self.rng.next_f32()],
                 velocity: [self.rng.range(-0.05, 0.05), self.rng.range(-0.05, 0.05)],
-                color: PALETTE[species],
+                color: self.palette[species],
                 species: species as u32,
             });
         }
@@ -479,7 +488,7 @@ impl SimulationState {
             batch.push(Particle {
                 position: [x - x.floor(), y - y.floor()],
                 velocity: [0.0, 0.0],
-                color: PALETTE[sp],
+                color: self.palette[sp],
                 species: sp as u32,
             });
         }
@@ -605,6 +614,13 @@ impl SimulationState {
                 }
             }
         }
+        if let Some(ref pal) = preset.palette {
+            for (i, &c) in pal.iter().enumerate().take(MAX_SPECIES) {
+                self.palette[i] = c;
+            }
+        } else {
+            self.palette = PALETTE_DEFAULT;
+        }
         self.respawn(queue);
     }
 
@@ -632,6 +648,7 @@ impl SimulationState {
             border_mode: self.border_mode,
             border_repel_strength: self.border_repel_strength,
             attraction,
+            palette: Some(self.palette.to_vec()),
         }
     }
 
@@ -649,6 +666,18 @@ impl SimulationState {
         seed_attraction_biased(&mut self.rng, &mut self.attraction, self.species_count);
     }
 
+    /// Generate random palette colours for the active species using evenly-spaced hues.
+    pub fn randomize_palette(&mut self) {
+        let n = self.species_count;
+        let hue_offset = self.rng.next_f32() * 360.0;
+        for i in 0..n {
+            let h = (hue_offset + i as f32 * 360.0 / n as f32) % 360.0;
+            let s = 0.75 + self.rng.next_f32() * 0.25;
+            let v = 0.80 + self.rng.next_f32() * 0.20;
+            self.palette[i] = hsv_to_packed_srgb(h, s, v);
+        }
+    }
+
     /// The GPU buffer containing all particle data (vertex + storage).
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
         &self.particle_buf
@@ -661,6 +690,28 @@ impl SimulationState {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Convert HSV (h in [0,360), s and v in [0,1]) to a packed sRGB `0xFF_BB_GG_RR` u32.
+fn hsv_to_packed_srgb(h: f32, s: f32, v: f32) -> u32 {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    let to_u8 = |f: f32| ((f + m).clamp(0.0, 1.0) * 255.0).round() as u32;
+    0xFF00_0000 | (to_u8(b) << 16) | (to_u8(g) << 8) | to_u8(r)
+}
 
 fn seed_attraction_biased(rng: &mut Rng, attraction: &mut [f32; 64], species_count: usize) {
     for i in 0..species_count {

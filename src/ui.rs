@@ -5,7 +5,7 @@
 
 use std::collections::VecDeque;
 
-use crate::simulation::{MAX_SPECIES, PALETTE, SimulationState};
+use crate::simulation::{MAX_SPECIES, PALETTE_DEFAULT, SimulationState};
 use crate::{benchmark, config};
 
 use egui_phosphor::regular as ph;
@@ -25,6 +25,10 @@ pub struct UiResponse {
     pub import_preset: bool,
     /// Open a file dialog to export a preset (caller handles the dialog).
     pub export_preset: bool,
+    /// The species palette was modified; caller should push it to the GPU.
+    pub palette_changed: bool,
+    /// Palette randomize was requested; caller calls `sim.randomize_palette()`.
+    pub randomize_palette: bool,
 }
 
 /// Actions requested by the Performance / benchmark panel.
@@ -170,6 +174,7 @@ pub fn draw_tool_options(
     spawn_species: &mut Option<usize>,
     spawn_rate: &mut u32,
     n_species: usize,
+    palette: &[u32; 8],
 ) {
     if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
         return;
@@ -222,7 +227,7 @@ pub fn draw_tool_options(
                             *spawn_species = None;
                         }
                         for i in 0..n_species {
-                            let color = species_color(i);
+                            let color = species_color(i, palette);
                             let is_sel = *spawn_species == Some(i);
                             let (rect, resp) = ui
                                 .allocate_exact_size(egui::Vec2::splat(22.0), egui::Sense::click());
@@ -260,8 +265,59 @@ fn attraction_cell_color(v: f32) -> egui::Color32 {
     }
 }
 
-fn species_color(idx: usize) -> egui::Color32 {
-    let packed = PALETTE[idx];
+/// Palette theme definitions (sRGB packed `0xFF_BB_GG_RR`).
+pub const PALETTE_VIVID: [u32; 8] = [
+    0xFF3232DC, // red    (220, 50, 50)
+    0xFF32DC32, // green  (50, 220, 50)
+    0xFFDC5032, // blue   (50, 80, 220)
+    0xFF28C8DC, // yellow (220, 200, 40)
+    0xFFDC28A0, // purple (160, 40, 220)
+    0xFFD2D228, // cyan   (40, 210, 210)
+    0xFF1E82DC, // orange (220, 130, 30)
+    0xFFB446DC, // pink   (220, 70, 180)
+];
+pub const PALETTE_NEON: [u32; 8] = [
+    0xFF1414FF, // neon-red     (255, 20, 20)
+    0xFF14FF14, // neon-green   (20, 255, 20)
+    0xFFFF7814, // neon-blue    (20, 120, 255)
+    0xFF00F0FF, // neon-yellow  (255, 240, 0)
+    0xFFF000FF, // neon-magenta (255, 0, 240)
+    0xFFFFF000, // neon-cyan    (0, 240, 255)
+    0xFF008CFF, // neon-orange  (255, 140, 0)
+    0xFF00FF96, // neon-lime    (150, 255, 0)
+];
+pub const PALETTE_PASTEL: [u32; 8] = [
+    0xFFB4B4FF, // pastel-red    (255, 180, 180)
+    0xFFB4FFB4, // pastel-green  (180, 255, 180)
+    0xFFFFC3B4, // pastel-blue   (180, 195, 255)
+    0xFFB4FAFF, // pastel-yellow (255, 250, 180)
+    0xFFFFB4E1, // pastel-purple (225, 180, 255)
+    0xFFF5F5B4, // pastel-cyan   (180, 245, 245)
+    0xFFB4DCFF, // pastel-orange (255, 220, 180)
+    0xFFE1B4F5, // pastel-pink   (245, 180, 225)
+];
+pub const PALETTE_DARK: [u32; 8] = [
+    0xFF1E1E96, // dark-red    (150, 30, 30)
+    0xFF1E961E, // dark-green  (30, 150, 30)
+    0xFFA0321E, // dark-blue   (30, 50, 160)
+    0xFF1482A0, // dark-amber  (160, 130, 20)
+    0xFFA01464, // dark-purple (100, 20, 160)
+    0xFF828214, // dark-teal   (20, 130, 130)
+    0xFF145AA0, // dark-orange (160, 90, 20)
+    0xFF6E1E96, // dark-pink   (150, 30, 110)
+];
+
+pub const PALETTE_THEMES: &[(&str, [u32; 8])] = &[
+    ("Default", PALETTE_DEFAULT),
+    ("Vivid", PALETTE_VIVID),
+    ("Neon", PALETTE_NEON),
+    ("Pastel", PALETTE_PASTEL),
+    ("Dark", PALETTE_DARK),
+];
+
+/// Extract an egui `Color32` from a packed sRGB `0xFF_BB_GG_RR` palette entry.
+fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
+    let packed = palette[idx];
     egui::Color32::from_rgb(
         (packed & 0xFF) as u8,
         ((packed >> 8) & 0xFF) as u8,
@@ -456,6 +512,68 @@ pub fn draw_ui(
 
             ui.separator();
 
+            egui::CollapsingHeader::new("Palette")
+                .default_open(false)
+                .show(ui, |ui| {
+                    // Theme picker
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_label("Theme")
+                            .selected_text(
+                                PALETTE_THEMES
+                                    .iter()
+                                    .find(|(_, p)| p == &sim.palette)
+                                    .map(|(n, _)| *n)
+                                    .unwrap_or("Custom"),
+                            )
+                            .show_ui(ui, |ui| {
+                                for &(name, theme) in PALETTE_THEMES {
+                                    if ui.selectable_label(sim.palette == theme, name).clicked() {
+                                        sim.palette = theme;
+                                        resp.palette_changed = true;
+                                    }
+                                }
+                            });
+                        if ui
+                            .button("Randomize")
+                            .on_hover_text("Generate a new random palette for all active species")
+                            .clicked()
+                        {
+                            // palette is randomized by the caller via UiResponse
+                            resp.palette_changed = true;
+                            resp.randomize_palette = true;
+                        }
+                    });
+
+                    ui.separator();
+
+                    // Per-species colour pickers
+                    let n = sim.species_count;
+                    ui.horizontal_wrapped(|ui| {
+                        for i in 0..n {
+                            let mut color = species_color(i, &sim.palette);
+                            let label = format!("S{}", i + 1);
+                            ui.vertical(|ui| {
+                                ui.label(&label);
+                                if egui::color_picker::color_edit_button_srgba(
+                                    ui,
+                                    &mut color,
+                                    egui::color_picker::Alpha::Opaque,
+                                )
+                                .changed()
+                                {
+                                    let r = color.r() as u32;
+                                    let g = color.g() as u32;
+                                    let b = color.b() as u32;
+                                    sim.palette[i] = 0xFF00_0000 | (b << 16) | (g << 8) | r;
+                                    resp.palette_changed = true;
+                                }
+                            });
+                        }
+                    });
+                });
+
+            ui.separator();
+
             egui::CollapsingHeader::new("Attraction Matrix")
                 .default_open(true)
                 .show(ui, |ui| {
@@ -477,13 +595,13 @@ pub fn draw_ui(
                             // Header row: blank corner + one label per column species
                             ui.label("");
                             for j in 0..n {
-                                ui.colored_label(species_color(j), format!("S{}", j + 1));
+                                ui.colored_label(species_color(j, &sim.palette), format!("S{}", j + 1));
                             }
                             ui.end_row();
 
                             // Data rows: row species label + N drag values
                             for i in 0..n {
-                                ui.colored_label(species_color(i), format!("S{}", i + 1));
+                                ui.colored_label(species_color(i, &sim.palette), format!("S{}", i + 1));
                                 for j in 0..n {
                                     let v = sim.attraction[i * MAX_SPECIES + j];
                                     let bg = attraction_cell_color(v);

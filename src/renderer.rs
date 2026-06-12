@@ -18,6 +18,7 @@ pub struct WgpuState {
     egui_renderer: egui_wgpu::Renderer,
     particle_pipeline: wgpu::RenderPipeline,
     globals_buf: wgpu::Buffer,
+    palette_buf: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     particle_radius: f32,
     immediate_supported: bool,
@@ -89,27 +90,53 @@ impl WgpuState {
             mapped_at_creation: false,
         });
 
+        // 8 × u32 = 32 bytes; holds the per-species sRGB palette for the vertex shader.
+        let palette_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Palette"),
+            size: 32,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Globals Layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let globals_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Globals Bind Group"),
             layout: &globals_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: globals_buf.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: palette_buf.as_entire_binding(),
+                },
+            ],
         });
 
         let particle_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -139,7 +166,7 @@ impl WgpuState {
                 },
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Uint32,
-                    offset: 16,
+                    offset: 20, // species field (color at 16 is unused by vertex shader)
                     shader_location: 2,
                 },
             ],
@@ -183,6 +210,7 @@ impl WgpuState {
             egui_renderer,
             particle_pipeline,
             globals_buf,
+            palette_buf,
             globals_bind_group,
             particle_radius: 3.0,
             immediate_supported,
@@ -190,6 +218,12 @@ impl WgpuState {
         };
         state.update_globals([0.5, 0.5], 1.0, 1.0, 1.5 / 720.0);
         state
+    }
+
+    /// Upload the 8-entry sRGB palette to the vertex shader storage buffer.
+    pub fn update_palette(&self, palette: &[u32; 8]) {
+        self.queue
+            .write_buffer(&self.palette_buf, 0, bytemuck::cast_slice(palette));
     }
 
     /// Switch between vsync-on (`Fifo`) and vsync-off (`Immediate`).

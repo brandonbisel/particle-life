@@ -7,7 +7,9 @@ struct Globals {
     world_aspect:    f32,    // world_width / world_height
 }
 
-@group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(0) var<uniform>       globals: Globals;
+// 8 sRGB colours packed as 0xFF_BB_GG_RR u32s; converted to linear in the shader.
+@group(0) @binding(1) var<storage, read> palette: array<u32>;
 
 struct VOut {
     @builtin(position) clip:  vec4<f32>,
@@ -15,19 +17,25 @@ struct VOut {
     @location(1)       color: vec4<f32>,
 }
 
-fn unpack_color(packed: u32) -> vec4<f32> {
-    let r = f32((packed >>  0u) & 0xFFu) / 255.0;
-    let g = f32((packed >>  8u) & 0xFFu) / 255.0;
-    let b = f32((packed >> 16u) & 0xFFu) / 255.0;
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { return c / 12.92; }
+    return pow((c + 0.055) / 1.055, 2.4);
+}
+
+fn species_to_color(species: u32) -> vec4<f32> {
+    let packed = palette[species];
+    let r = srgb_to_linear(f32((packed >>  0u) & 0xFFu) / 255.0);
+    let g = srgb_to_linear(f32((packed >>  8u) & 0xFFu) / 255.0);
+    let b = srgb_to_linear(f32((packed >> 16u) & 0xFFu) / 255.0);
     return vec4<f32>(r, g, b, 1.0);
 }
 
 @vertex
 fn vs_main(
-    @builtin(vertex_index) vi:     u32,
-    @location(0)           pos:    vec2<f32>,  // simulation coords [0,1]²
-    @location(1)           vel:    vec2<f32>,  // unused in vertex stage; here for stride
-    @location(2)           packed: u32,        // R=bits0-7, G=bits8-15, B=bits16-23
+    @builtin(vertex_index) vi:      u32,
+    @location(0)           pos:     vec2<f32>,  // simulation coords [0,1]²
+    @location(1)           vel:     vec2<f32>,  // unused in vertex stage; here for stride
+    @location(2)           species: u32,
 ) -> VOut {
     // Two CCW triangles forming a unit quad in [-1,1]²
     var corners = array<vec2<f32>, 6>(
@@ -64,7 +72,7 @@ fn vs_main(
     var out: VOut;
     out.clip  = vec4<f32>(ndc_pos + ndc_off, 0.0, 1.0);
     out.uv    = corner;
-    out.color = unpack_color(packed);
+    out.color = species_to_color(species);
     return out;
 }
 
