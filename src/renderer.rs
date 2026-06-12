@@ -90,10 +90,10 @@ impl WgpuState {
             mapped_at_creation: false,
         });
 
-        // 8 × u32 = 32 bytes; holds the per-species sRGB palette for the vertex shader.
+        // 8 × vec4<f32> = 128 bytes; holds pre-linearised palette colours for the vertex shader.
         let palette_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Palette"),
-            size: 32,
+            size: 128,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -220,10 +220,22 @@ impl WgpuState {
         state
     }
 
-    /// Upload the 8-entry sRGB palette to the vertex shader storage buffer.
+    /// Convert the 8-entry sRGB palette to linear floats and upload to the vertex shader.
+    ///
+    /// Doing the sRGB→linear conversion here (once, on the CPU) avoids three `pow()` calls
+    /// per vertex in the shader, which measurably hurts throughput at CPU-bound particle counts.
     pub fn update_palette(&self, palette: &[u32; 8]) {
+        let linear: [[f32; 4]; 8] = std::array::from_fn(|i| {
+            let p = palette[i];
+            [
+                srgb_u8_to_linear((p & 0xFF) as u8),
+                srgb_u8_to_linear(((p >> 8) & 0xFF) as u8),
+                srgb_u8_to_linear(((p >> 16) & 0xFF) as u8),
+                1.0,
+            ]
+        });
         self.queue
-            .write_buffer(&self.palette_buf, 0, bytemuck::cast_slice(palette));
+            .write_buffer(&self.palette_buf, 0, bytemuck::cast_slice(&linear));
     }
 
     /// Switch between vsync-on (`Fifo`) and vsync-off (`Immediate`).
@@ -410,5 +422,14 @@ impl WgpuState {
 
     pub fn max_texture_side(&self) -> usize {
         self.device.limits().max_texture_dimension_2d as usize
+    }
+}
+
+fn srgb_u8_to_linear(c: u8) -> f32 {
+    let f = c as f32 / 255.0;
+    if f <= 0.04045 {
+        f / 12.92
+    } else {
+        ((f + 0.055) / 1.055).powf(2.4)
     }
 }
