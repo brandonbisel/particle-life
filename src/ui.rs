@@ -275,7 +275,7 @@ fn attraction_cell_color(v: f32) -> egui::Color32 {
     }
 }
 
-/// Palette theme definitions (sRGB packed `0xFF_BB_GG_RR`).
+/// Vivid palette — saturated primary hues (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_VIVID: [u32; 8] = [
     0xFF3232DC, // red    (220, 50, 50)
     0xFF32DC32, // green  (50, 220, 50)
@@ -286,6 +286,7 @@ pub const PALETTE_VIVID: [u32; 8] = [
     0xFF1E82DC, // orange (220, 130, 30)
     0xFFB446DC, // pink   (220, 70, 180)
 ];
+/// Neon palette — maximum-brightness electric colours (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_NEON: [u32; 8] = [
     0xFF1414FF, // neon-red     (255, 20, 20)
     0xFF14FF14, // neon-green   (20, 255, 20)
@@ -296,6 +297,7 @@ pub const PALETTE_NEON: [u32; 8] = [
     0xFF008CFF, // neon-orange  (255, 140, 0)
     0xFF00FF96, // neon-lime    (150, 255, 0)
 ];
+/// Pastel palette — soft, desaturated tints (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_PASTEL: [u32; 8] = [
     0xFFB4B4FF, // pastel-red    (255, 180, 180)
     0xFFB4FFB4, // pastel-green  (180, 255, 180)
@@ -306,6 +308,7 @@ pub const PALETTE_PASTEL: [u32; 8] = [
     0xFFB4DCFF, // pastel-orange (255, 220, 180)
     0xFFE1B4F5, // pastel-pink   (245, 180, 225)
 ];
+/// Dark palette — deep, low-luminance tones (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_DARK: [u32; 8] = [
     0xFF1E1E96, // dark-red    (150, 30, 30)
     0xFF1E961E, // dark-green  (30, 150, 30)
@@ -317,6 +320,7 @@ pub const PALETTE_DARK: [u32; 8] = [
     0xFF6E1E96, // dark-pink   (150, 30, 110)
 ];
 
+/// All named palette themes in display order for the Theme combo-box.
 pub const PALETTE_THEMES: &[(&str, [u32; 8])] = &[
     ("Default", PALETTE_DEFAULT),
     ("Vivid", PALETTE_VIVID),

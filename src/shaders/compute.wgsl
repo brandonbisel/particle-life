@@ -1,3 +1,10 @@
+// Grid pass 5 — Force: compute pairwise Particle Life forces for each particle.
+//
+// Each thread handles one entry from sorted_entries (cell-sorted order).  It walks the
+// 5×5 neighbourhood of cells and accumulates force from every nearby particle, then
+// integrates velocity and position.  Reading from sorted_entries instead of through
+// sorted_indices avoids random pointer-chasing and keeps GPU caches warm at high N.
+
 struct Particle {
     position: vec2<f32>,
     velocity: vec2<f32>,

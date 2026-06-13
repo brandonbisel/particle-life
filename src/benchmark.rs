@@ -151,7 +151,7 @@ impl QuickBench {
 
 // ── Result ────────────────────────────────────────────────────────────────────
 
-/// Per-combo result produced by [`BenchmarkRunner`].
+/// Per-combo result produced by [`BenchmarkRunner`] and written to CSV.
 #[derive(Clone)]
 pub struct BenchmarkResult {
     pub preset_name: String,
@@ -183,9 +183,9 @@ enum State {
     Done,
 }
 
-/// Runs the full benchmark suite: every [`builtin_presets`](crate::config::builtin_presets)
-/// × [`BENCHMARK_TIERS`] combination, collecting [`TARGET_FRAMES`] FPS samples per combo
-/// after a [`WARMUP_FRAMES`]-frame warm-up period.
+/// Runs the full benchmark suite: every [`builtin_presets`] × [`BENCHMARK_TIERS`] combination.
+/// Each combo runs a [`WARMUP_SECS`]-second warm-up followed by [`COLLECT_SECS`] seconds of
+/// FPS sample collection.
 pub struct BenchmarkRunner {
     state: State,
     pub results: Vec<BenchmarkResult>,

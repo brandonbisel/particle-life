@@ -1,3 +1,8 @@
+// Grid pass 3 — Scatter: each particle claims a slot in sorted_indices via atomicAdd.
+// cell_counts is reused here as per-cell write cursors (zeroed by the prefix pass).
+// After this pass sorted_indices[cell_offsets[cell]..cell_offsets[cell+1]] holds all
+// particle indices that belong to that cell, in arbitrary order.
+
 struct Particle {
     position: vec2<f32>,
     velocity: vec2<f32>,

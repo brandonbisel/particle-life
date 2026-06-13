@@ -691,7 +691,7 @@ impl SimulationState {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Convert HSV (h in [0,360), s and v in [0,1]) to a packed sRGB `0xFF_BB_GG_RR` u32.
+/// Convert HSV (h in \[0,360), s and v in \[0,1\]) to a packed sRGB `0xFF_BB_GG_RR` u32.
 fn hsv_to_packed_srgb(h: f32, s: f32, v: f32) -> u32 {
     let c = v * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());

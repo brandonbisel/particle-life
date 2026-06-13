@@ -88,6 +88,8 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `pollster`                           | 0.3     | Block on async wgpu initialization           |
 | `serde` + `toml`                     | 1 / 0.8 | Preset serialisation                         |
 | `rfd`                                | 0.15    | Native file dialogs for import/export        |
+| `png`                                | 0.17    | PNG encoding for screenshots and thumbnails  |
+| `log` + `env_logger`                 | 0.4 / 0.11 | Structured logging (adapter selection, warnings) |
 
 ## Controls
 

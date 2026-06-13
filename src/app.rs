@@ -46,7 +46,7 @@ fn compute_fit_zoom(world_w: f32, world_h: f32, vp_w: u32, vp_h: u32) -> f32 {
     (vp_aspect / world_aspect).min(1.0)
 }
 
-/// Convert a screen-space cursor position to world-space coordinates (normalized [0,1]²).
+/// Convert a screen-space cursor position to world-space coordinates (normalized \[0,1\]²).
 fn screen_to_world(
     px: PhysicalPosition<f64>,
     viewport: winit::dpi::PhysicalSize<u32>,
@@ -74,6 +74,11 @@ fn apply_zoom(cam: &mut Camera, cursor_world: [f32; 2], factor: f32) {
 
 // ── AppState ──────────────────────────────────────────────────────────────────
 
+/// Top-level winit [`ApplicationHandler`].
+///
+/// Holds [`AppState`] behind an `Option` because the state cannot be created
+/// until the first [`resumed`](ApplicationHandler::resumed) event (required by
+/// Wayland, which only provides a valid window handle after that point).
 #[derive(Default)]
 pub struct AppHandler {
     state: Option<AppState>,

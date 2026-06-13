@@ -10,7 +10,7 @@ cargo run --release
 cargo check             # fast type/borrow check without linking
 ```
 
-No tests exist yet. `cargo check` is the fastest way to verify changes compile.
+Unit tests live in `config.rs` (preset invariants, TOML round-trip) and `simulation.rs` (struct sizes, field offsets). They are headless and require no GPU. `cargo check` is the fastest compile-only verification; `cargo test` runs the full suite.
 
 ## Branching Strategy
 

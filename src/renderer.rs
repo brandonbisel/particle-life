@@ -10,6 +10,10 @@ use winit::window::Window;
 
 use crate::simulation::{Particle, SimulationState};
 
+/// Owns the wgpu device, surface, and both the particle and egui render pipelines.
+///
+/// Created once at startup (inside [`AppHandler::resumed`](crate::app::AppHandler))
+/// and driven each frame by [`render`](WgpuState::render).
 pub struct WgpuState {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -26,6 +30,10 @@ pub struct WgpuState {
 }
 
 impl WgpuState {
+    /// Initialise wgpu, create the surface, and build both render pipelines.
+    ///
+    /// Blocks the calling thread while the adapter and device are acquired
+    /// (`pollster::block_on`).  Must be called from the main thread.
     pub fn new(window: Arc<Window>) -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
@@ -260,6 +268,7 @@ impl WgpuState {
         self.immediate_supported
     }
 
+    /// Reconfigure the surface for a new window size.  No-ops on zero-area sizes.
     pub fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width == 0 || new_size.height == 0 {
             return;
@@ -293,6 +302,10 @@ impl WgpuState {
         );
     }
 
+    /// Render one frame: run the 5-pass simulation compute, draw particles, then draw the egui overlay.
+    ///
+    /// Returns `Err(SurfaceError::Lost | Outdated)` when the surface needs to be
+    /// reconfigured (caller should call `resize`); other errors are propagated as-is.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -549,14 +562,17 @@ impl WgpuState {
         png_bytes
     }
 
+    /// The wgpu logical device (used by callers to create simulation buffers/pipelines).
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
 
+    /// The wgpu command queue (used by callers to upload data to GPU buffers).
     pub fn queue(&self) -> &wgpu::Queue {
         &self.queue
     }
 
+    /// Maximum texture dimension supported by the adapter (passed to egui for atlas sizing).
     pub fn max_texture_side(&self) -> usize {
         self.device.limits().max_texture_dimension_2d as usize
     }
