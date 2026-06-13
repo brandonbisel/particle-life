@@ -124,40 +124,44 @@ pub fn draw_toolbar(
                         *tool = Tool::ZoomOut;
                     }
 
-                    let r = ui
-                        .add_enabled(
-                            !bench_running,
-                            egui::SelectableLabel::new(*tool == Tool::Attract, ph::MAGNET),
-                        )
-                        .on_hover_text("Attract — hold to pull nearby particles toward the cursor");
-                    if r.clicked() {
-                        *tool = Tool::Attract;
-                    }
+                    ui.add_enabled_ui(!bench_running, |ui| {
+                        let r = ui
+                            .add_sized(
+                                icon_sz,
+                                egui::SelectableLabel::new(*tool == Tool::Attract, ph::MAGNET),
+                            )
+                            .on_hover_text(
+                                "Attract — hold to pull nearby particles toward the cursor",
+                            );
+                        if r.clicked() {
+                            *tool = Tool::Attract;
+                        }
 
-                    let r = ui
-                        .add_enabled(
-                            !bench_running,
-                            egui::SelectableLabel::new(
-                                *tool == Tool::Repel,
-                                ph::ARROWS_OUT_CARDINAL,
-                            ),
-                        )
-                        .on_hover_text(
-                            "Repel — hold to push nearby particles away from the cursor",
-                        );
-                    if r.clicked() {
-                        *tool = Tool::Repel;
-                    }
+                        let r = ui
+                            .add_sized(
+                                icon_sz,
+                                egui::SelectableLabel::new(
+                                    *tool == Tool::Repel,
+                                    ph::ARROWS_OUT_CARDINAL,
+                                ),
+                            )
+                            .on_hover_text(
+                                "Repel — hold to push nearby particles away from the cursor",
+                            );
+                        if r.clicked() {
+                            *tool = Tool::Repel;
+                        }
 
-                    let r = ui
-                        .add_enabled(
-                            !bench_running,
-                            egui::SelectableLabel::new(*tool == Tool::Spawn, ph::SPARKLE),
-                        )
-                        .on_hover_text("Spawn — hold to emit new particles at the cursor");
-                    if r.clicked() {
-                        *tool = Tool::Spawn;
-                    }
+                        let r = ui
+                            .add_sized(
+                                icon_sz,
+                                egui::SelectableLabel::new(*tool == Tool::Spawn, ph::SPARKLE),
+                            )
+                            .on_hover_text("Spawn — hold to emit new particles at the cursor");
+                        if r.clicked() {
+                            *tool = Tool::Spawn;
+                        }
+                    });
 
                     ui.separator();
 
@@ -178,12 +182,15 @@ pub fn draw_toolbar(
                     }
 
                     if ui
-                        .add_enabled(
-                            !bench_running,
-                            egui::SelectableLabel::new(gallery_open, ph::IMAGES),
-                        )
-                        .on_hover_text("Preset Gallery — browse presets visually")
-                        .clicked()
+                        .add_enabled_ui(!bench_running, |ui| {
+                            ui.add_sized(
+                                icon_sz,
+                                egui::SelectableLabel::new(gallery_open, ph::IMAGES),
+                            )
+                            .on_hover_text("Preset Gallery — browse presets visually")
+                            .clicked()
+                        })
+                        .inner
                     {
                         toggle_gallery = true;
                     }
