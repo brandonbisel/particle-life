@@ -531,11 +531,7 @@ fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
 }
 
 /// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border.
-pub fn draw_ui(
-    ctx: &egui::Context,
-    sim: &mut SimulationState,
-    bench_running: bool,
-) -> UiResponse {
+pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bool) -> UiResponse {
     let mut resp = UiResponse::default();
 
     egui::Window::new("Particle Life")

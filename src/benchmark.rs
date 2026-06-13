@@ -762,8 +762,13 @@ impl CapacityBench {
                 let not_converged = iter + 1 < CAPACITY_MAX_ITERS
                     && (new_hi as f64) / (new_lo as f64).max(1.0) >= CAPACITY_CONVERGENCE_RATIO;
                 if not_converged
-                    && let Some(next_mid) =
-                        Self::next_mid_interp(new_lo, new_hi, new_lo_fps, new_hi_fps, self.target_fps)
+                    && let Some(next_mid) = Self::next_mid_interp(
+                        new_lo,
+                        new_hi,
+                        new_lo_fps,
+                        new_hi_fps,
+                        self.target_fps,
+                    )
                 {
                     self.state = CapState::Warmup {
                         preset_idx,
@@ -881,10 +886,7 @@ impl CapacityBench {
         }
         // Ecosystem: stable fps must either be well above target (no cliff at
         // this N) or have dropped from the warmup peak (cliff has settled).
-        let peak = samples
-            .iter()
-            .map(|(_, f)| *f)
-            .fold(0.0_f32, f32::max);
+        let peak = samples.iter().map(|(_, f)| *f).fold(0.0_f32, f32::max);
         r_avg > target_fps * 3.0 || r_avg < peak * 0.8
     }
 
