@@ -489,7 +489,7 @@ impl ApplicationHandler for AppHandler {
                 let shader_zoom = state.camera.zoom_factor * state.fit_zoom;
                 let world_aspect = state.sim.world_aspect();
 
-                let (full_output, ui_resp, bench_resp, should_reset_view) = {
+                let (full_output, ui_resp, bench_resp, should_reset_view, take_screenshot) = {
                     let egui_ctx = &state.egui_ctx;
                     let sim = &mut state.sim;
                     let frame_times = &state.frame_times;
@@ -514,6 +514,7 @@ impl ApplicationHandler for AppHandler {
                         vsync: None,
                     };
                     let mut reset_view = false;
+                    let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
                         ui_r = ui::draw_ui(ctx, sim, preset_library, selected_preset);
                         bench_r = ui::draw_perf_overlay(
@@ -525,8 +526,9 @@ impl ApplicationHandler for AppHandler {
                             vsync,
                             vsync_available,
                         );
-                        let (rv, toolbar_rect) = ui::draw_toolbar(ctx, tool);
+                        let (rv, ss, toolbar_rect) = ui::draw_toolbar(ctx, tool);
                         reset_view = rv;
+                        take_screenshot = ss;
                         ui::draw_tool_options(
                             ctx,
                             *tool,
@@ -547,7 +549,7 @@ impl ApplicationHandler for AppHandler {
                         );
                         ui::draw_cursor_indicator(ctx, *tool, *tool_range, shader_zoom);
                     });
-                    (out, ui_r, bench_r, reset_view)
+                    (out, ui_r, bench_r, reset_view, take_screenshot)
                 };
 
                 if ui_resp.respawn {
@@ -564,6 +566,22 @@ impl ApplicationHandler for AppHandler {
                 }
                 if should_reset_view {
                     state.camera = Camera::default_view();
+                }
+                if take_screenshot {
+                    let dir = std::path::Path::new(config::SCREENSHOTS_DIR);
+                    let _ = std::fs::create_dir_all(dir);
+                    let secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let path = dir.join(format!("screenshot_{secs}.png"));
+                    let png =
+                        state
+                            .renderer
+                            .capture_png(&state.sim, cam_center, shader_zoom);
+                    if let Err(e) = std::fs::write(&path, &png) {
+                        log::warn!("Screenshot failed: {e}");
+                    }
                 }
                 if ui_resp.match_win {
                     let sz = window.inner_size();

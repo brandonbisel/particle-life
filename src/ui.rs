@@ -54,12 +54,12 @@ pub enum Tool {
     Spawn,
 }
 
-/// Draw the right-side vertical toolbar: icon tool buttons and Reset View.
+/// Draw the right-side vertical toolbar: icon tool buttons, Reset View, and Screenshot.
 ///
-/// Returns `(reset_view_clicked, toolbar_screen_rect)`.  The caller should
+/// Returns `(reset_view_clicked, take_screenshot, toolbar_screen_rect)`.  The caller should
 /// pass the rect to [`draw_tool_options`] so it can position itself flush
 /// against the toolbar's left edge.
-pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) {
+pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, bool, egui::Rect) {
     // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
     let response = egui::Area::new(egui::Id::new("toolbar"))
         .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
@@ -68,6 +68,7 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) 
             egui::Frame::window(ui.style())
                 .show(ui, |ui| {
                     let mut rv = false;
+                    let mut take_screenshot = false;
                     let icon_sz = egui::Vec2::splat(32.0);
 
                     let r = ui
@@ -151,12 +152,21 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) 
                         rv = true;
                     }
 
-                    rv
+                    if ui
+                        .add_sized(icon_sz, egui::Button::new(ph::CAMERA))
+                        .on_hover_text("Save a screenshot to the screenshots/ folder")
+                        .clicked()
+                    {
+                        take_screenshot = true;
+                    }
+
+                    (rv, take_screenshot)
                 })
                 .inner
         });
 
-    (response.inner, response.response.rect)
+    let (rv, take_screenshot) = response.inner;
+    (rv, take_screenshot, response.response.rect)
 }
 
 /// Draw the floating tool-options panel when a parametric tool is active.

@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub const SESSION_PATH: &str = "session.toml";
 /// Directory scanned for user-created `*.toml` preset files.
 pub const PRESETS_DIR: &str = "presets";
+/// Directory where ad-hoc screenshots are saved.
+pub const SCREENSHOTS_DIR: &str = "screenshots";
 
 // ── Preset ────────────────────────────────────────────────────────────────────
 
