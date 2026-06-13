@@ -9,7 +9,7 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 ## Features
 
 - **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
-- **500K particles** at 26–47 fps at fixed world size; comparable frame rates at 2M with auto-density
+- **500K particles** at 9–44 fps at fixed world size depending on particle distribution (Clusters/Chains 44 fps; Ecosystem 9 fps due to spatial-grid hotspots from a tight cluster); comparable frame rates at 2M with auto-density
 - **8 species** with a fully editable N×N attraction matrix
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength

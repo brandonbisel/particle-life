@@ -517,10 +517,13 @@ impl ApplicationHandler for AppHandler {
             }
 
             WindowEvent::RedrawRequested => {
-                let dt = state.last_frame.elapsed().as_secs_f32().min(0.05);
+                let raw_dt = state.last_frame.elapsed().as_secs_f32();
                 state.last_frame = Instant::now();
+                // Physics cap: prevents particles jumping during pauses/focus loss.
+                // Use raw_dt for all fps measurements so heavy frames aren't clamped to 20fps.
+                let dt = raw_dt.min(0.05);
 
-                state.frame_times.push_back(dt);
+                state.frame_times.push_back(raw_dt);
                 if state.frame_times.len() > 120 {
                     state.frame_times.pop_front();
                 }
@@ -535,7 +538,7 @@ impl ApplicationHandler for AppHandler {
                     } else {
                         0.0
                     };
-                    state.sim.perf_world_adjust(avg_fps, dt);
+                    state.sim.perf_world_adjust(avg_fps, raw_dt);
                     // Pin world_width to viewport aspect after every adjustment to
                     // prevent float drift and ensure fit_zoom stays accurate.
                     let vp = window.inner_size();
@@ -827,7 +830,7 @@ impl ApplicationHandler for AppHandler {
                     log::warn!("Benchmark CSV export failed: {e}");
                 }
                 if state.benchmark.is_running() {
-                    let action = state.benchmark.advance(dt);
+                    let action = state.benchmark.advance(raw_dt);
                     if matches!(action, benchmark::BenchmarkAction::Done) {
                         state.renderer.set_vsync(state.vsync);
                     }
@@ -846,7 +849,7 @@ impl ApplicationHandler for AppHandler {
                 if state.quick_bench.is_running() {
                     state
                         .quick_bench
-                        .advance(dt, state.sim.particle_count_gpu());
+                        .advance(raw_dt, state.sim.particle_count_gpu());
                 }
 
                 // Apply active tool effects to sim mouse state before dispatch.
