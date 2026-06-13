@@ -469,7 +469,12 @@ impl WgpuState {
 
         let world_aspect = sim.world_aspect();
         let particle_radius_norm = sim.particle_radius / sim.world_height;
-        self.update_globals(camera_center, shader_zoom, world_aspect, particle_radius_norm);
+        self.update_globals(
+            camera_center,
+            shader_zoom,
+            world_aspect,
+            particle_radius_norm,
+        );
 
         let mut encoder = self
             .device

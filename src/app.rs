@@ -19,6 +19,18 @@ use winit::{
 
 use crate::{benchmark, config, icon, renderer::WgpuState, simulation::SimulationState, ui};
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Compute per-species counts assuming uniform distribution across `n_species`.
+fn uniform_species_counts(total: usize, n_species: usize) -> Vec<usize> {
+    if n_species == 0 {
+        return vec![];
+    }
+    let per = total / n_species;
+    let rem = total % n_species;
+    (0..n_species).map(|i| per + usize::from(i < rem)).collect()
+}
+
 // ── Camera ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
@@ -109,6 +121,11 @@ struct AppState {
     // Presets + persistence
     preset_library: Vec<config::Preset>,
     selected_preset: usize,
+    preset_thumbnails: Vec<Option<egui::TextureHandle>>,
+    gallery_open: bool,
+
+    // Per-species particle counts (CPU-tracked; reset on respawn/apply_preset, updated on spawn)
+    per_species_count: Vec<usize>,
 
     // Benchmark
     benchmark: benchmark::BenchmarkRunner,
@@ -196,6 +213,8 @@ impl ApplicationHandler for AppHandler {
         }
         renderer.update_palette(&sim.palette);
         let fit_zoom = compute_fit_zoom(world_width, world_height, size.width, size.height);
+        let per_species_count =
+            uniform_species_counts(sim.particle_count_gpu() as usize, sim.species_count);
 
         let egui_ctx = egui::Context::default();
         let mut fonts = egui::FontDefinitions::default();
@@ -209,6 +228,7 @@ impl ApplicationHandler for AppHandler {
             None,
             Some(renderer.max_texture_side()),
         );
+        let preset_thumbnails = ui::load_preset_thumbnails(&preset_library, &egui_ctx);
 
         self.state = Some(AppState {
             renderer,
@@ -221,6 +241,9 @@ impl ApplicationHandler for AppHandler {
             fit_zoom,
             preset_library,
             selected_preset: 0,
+            preset_thumbnails,
+            gallery_open: false,
+            per_species_count,
             benchmark: benchmark::BenchmarkRunner::new(),
             quick_bench: benchmark::QuickBench::new(),
             vsync: true,
@@ -474,7 +497,13 @@ impl ApplicationHandler for AppHandler {
                                     apply_zoom(&mut state.camera, cw, 1.0 / 1.5);
                                 }
                                 "0" => state.camera = Camera::default_view(),
-                                "r" => state.sim.respawn(state.renderer.queue()),
+                                "r" => {
+                                    state.sim.respawn(state.renderer.queue());
+                                    state.per_species_count = uniform_species_counts(
+                                        state.sim.particle_count_gpu() as usize,
+                                        state.sim.species_count,
+                                    );
+                                }
                                 "s" => state.pending_screenshot = true,
                                 _ => {}
                             }
@@ -519,6 +548,9 @@ impl ApplicationHandler for AppHandler {
                     let quick_bench = &state.quick_bench;
                     let vsync = state.vsync;
                     let vsync_available = state.renderer.vsync_toggle_available();
+                    let preset_thumbnails = &state.preset_thumbnails;
+                    let gallery_open = &mut state.gallery_open;
+                    let per_species_count = &state.per_species_count;
                     let mut ui_r = ui::UiResponse::default();
                     let mut bench_r = ui::BenchmarkPanelResponse {
                         start: false,
@@ -529,7 +561,7 @@ impl ApplicationHandler for AppHandler {
                     let mut reset_view = false;
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r = ui::draw_ui(ctx, sim, preset_library, selected_preset);
+                        ui_r = ui::draw_ui(ctx, sim);
                         bench_r = ui::draw_perf_overlay(
                             ctx,
                             frame_times,
@@ -538,10 +570,25 @@ impl ApplicationHandler for AppHandler {
                             benchmark,
                             vsync,
                             vsync_available,
+                            per_species_count,
                         );
-                        let (rv, ss, toolbar_rect) = ui::draw_toolbar(ctx, tool);
+                        let (rv, ss, tg, toolbar_rect) = ui::draw_toolbar(ctx, tool, *gallery_open);
                         reset_view = rv;
                         take_screenshot = ss;
+                        if tg {
+                            *gallery_open = !*gallery_open;
+                        }
+                        if *gallery_open
+                            && ui::draw_gallery(
+                                ctx,
+                                preset_library,
+                                preset_thumbnails,
+                                selected_preset,
+                                gallery_open,
+                            )
+                        {
+                            ui_r.apply_preset = true;
+                        }
                         ui::draw_tool_options(
                             ctx,
                             *tool,
@@ -565,8 +612,15 @@ impl ApplicationHandler for AppHandler {
                     (out, ui_r, bench_r, reset_view, take_screenshot)
                 };
 
+                if ui_resp.toggle_gallery {
+                    state.gallery_open = !state.gallery_open;
+                }
                 if ui_resp.respawn {
                     state.sim.respawn(state.renderer.queue());
+                    state.per_species_count = uniform_species_counts(
+                        state.sim.particle_count_gpu() as usize,
+                        state.sim.species_count,
+                    );
                 }
                 if ui_resp.randomize {
                     state.sim.randomize_attraction();
@@ -580,7 +634,8 @@ impl ApplicationHandler for AppHandler {
                 if should_reset_view {
                     state.camera = Camera::default_view();
                 }
-                let take_screenshot = take_screenshot || std::mem::take(&mut state.pending_screenshot);
+                let take_screenshot =
+                    take_screenshot || std::mem::take(&mut state.pending_screenshot);
                 if take_screenshot {
                     let dir = std::path::Path::new(config::SCREENSHOTS_DIR);
                     let _ = std::fs::create_dir_all(dir);
@@ -589,10 +644,9 @@ impl ApplicationHandler for AppHandler {
                         .unwrap_or_default()
                         .as_secs();
                     let path = dir.join(format!("screenshot_{secs}.png"));
-                    let png =
-                        state
-                            .renderer
-                            .capture_png(&state.sim, cam_center, shader_zoom);
+                    let png = state
+                        .renderer
+                        .capture_png(&state.sim, cam_center, shader_zoom);
                     if let Err(e) = std::fs::write(&path, &png) {
                         log::warn!("Screenshot failed: {e}");
                     }
@@ -618,6 +672,11 @@ impl ApplicationHandler for AppHandler {
                         window.inner_size().width,
                         window.inner_size().height,
                     );
+                    state.per_species_count = uniform_species_counts(
+                        state.sim.particle_count_gpu() as usize,
+                        state.sim.species_count,
+                    );
+                    state.renderer.update_palette(&state.sim.palette);
                 }
                 if ui_resp.import_preset
                     && let Some(path) = rfd::FileDialog::new()
@@ -631,7 +690,9 @@ impl ApplicationHandler for AppHandler {
                             {
                                 preset.name = stem.to_string();
                             }
+                            let thumb = ui::load_preset_thumbnail(&preset.name, &state.egui_ctx);
                             state.preset_library.push(preset);
+                            state.preset_thumbnails.push(thumb);
                             state.selected_preset = state.preset_library.len() - 1;
                         }
                         Err(e) => log::warn!("Import failed: {e}"),
@@ -647,15 +708,12 @@ impl ApplicationHandler for AppHandler {
                         .file_stem()
                         .and_then(|s| s.to_str())
                         .unwrap_or("exported");
-                    if let Err(e) =
-                        config::save_preset_file(&state.sim.to_preset(name), &path)
-                    {
+                    if let Err(e) = config::save_preset_file(&state.sim.to_preset(name), &path) {
                         log::warn!("Export failed: {e}");
                     } else {
-                        let png =
-                            state
-                                .renderer
-                                .capture_png(&state.sim, cam_center, shader_zoom);
+                        let png = state
+                            .renderer
+                            .capture_png(&state.sim, cam_center, shader_zoom);
                         let thumb_path = path.with_extension("png");
                         if let Err(e) = std::fs::write(&thumb_path, &png) {
                             log::warn!("Thumbnail save failed: {e}");
@@ -739,6 +797,7 @@ impl ApplicationHandler for AppHandler {
                     let queue = state.renderer.queue();
                     let spawn_species = state.spawn_species;
                     let spawn_rate = state.spawn_rate;
+                    let before = state.sim.particle_count_gpu();
                     state.sim.spawn_particles(
                         queue,
                         world,
@@ -747,6 +806,26 @@ impl ApplicationHandler for AppHandler {
                         world_aspect,
                         spawn_rate,
                     );
+                    let spawned = (state.sim.particle_count_gpu() - before) as usize;
+                    if spawned > 0 {
+                        let n = state.sim.species_count;
+                        match spawn_species {
+                            Some(s) if s < state.per_species_count.len() => {
+                                state.per_species_count[s] += spawned;
+                            }
+                            _ => {
+                                // Random species: distribute evenly
+                                let per = spawned / n;
+                                let rem = spawned % n;
+                                for c in state.per_species_count.iter_mut() {
+                                    *c += per;
+                                }
+                                for c in state.per_species_count.iter_mut().take(rem) {
+                                    *c += 1;
+                                }
+                            }
+                        }
+                    }
                 }
 
                 let egui::FullOutput {

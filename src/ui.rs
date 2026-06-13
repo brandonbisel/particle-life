@@ -4,6 +4,7 @@
 //! they display and return response structs that `app.rs` acts on.
 
 use std::collections::VecDeque;
+use std::io::Cursor;
 
 use crate::simulation::{MAX_SPECIES, PALETTE_DEFAULT, SimulationState};
 use crate::{benchmark, config};
@@ -25,6 +26,8 @@ pub struct UiResponse {
     pub import_preset: bool,
     /// Open a file dialog to export a preset (caller handles the dialog).
     pub export_preset: bool,
+    /// Toggle the preset gallery window.
+    pub toggle_gallery: bool,
     /// The species palette was modified; caller should push it to the GPU.
     pub palette_changed: bool,
     /// Palette randomize was requested; caller calls `sim.randomize_palette()`.
@@ -54,12 +57,16 @@ pub enum Tool {
     Spawn,
 }
 
-/// Draw the right-side vertical toolbar: icon tool buttons, Reset View, and Screenshot.
+/// Draw the right-side vertical toolbar: icon tool buttons, Reset View, Screenshot, and Gallery.
 ///
-/// Returns `(reset_view_clicked, take_screenshot, toolbar_screen_rect)`.  The caller should
-/// pass the rect to [`draw_tool_options`] so it can position itself flush
+/// Returns `(reset_view_clicked, take_screenshot, toggle_gallery, toolbar_screen_rect)`.
+/// The caller should pass the rect to [`draw_tool_options`] so it can position itself flush
 /// against the toolbar's left edge.
-pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, bool, egui::Rect) {
+pub fn draw_toolbar(
+    ctx: &egui::Context,
+    tool: &mut Tool,
+    gallery_open: bool,
+) -> (bool, bool, bool, egui::Rect) {
     // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
     let response = egui::Area::new(egui::Id::new("toolbar"))
         .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
@@ -69,6 +76,7 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, bool, egui::
                 .show(ui, |ui| {
                     let mut rv = false;
                     let mut take_screenshot = false;
+                    let mut toggle_gallery = false;
                     let icon_sz = egui::Vec2::splat(32.0);
 
                     let r = ui
@@ -160,13 +168,24 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, bool, egui::
                         take_screenshot = true;
                     }
 
-                    (rv, take_screenshot)
+                    if ui
+                        .add_sized(
+                            icon_sz,
+                            egui::SelectableLabel::new(gallery_open, ph::IMAGES),
+                        )
+                        .on_hover_text("Preset Gallery — browse presets visually")
+                        .clicked()
+                    {
+                        toggle_gallery = true;
+                    }
+
+                    (rv, take_screenshot, toggle_gallery)
                 })
                 .inner
         });
 
-    let (rv, take_screenshot) = response.inner;
-    (rv, take_screenshot, response.response.rect)
+    let (rv, take_screenshot, toggle_gallery) = response.inner;
+    (rv, take_screenshot, toggle_gallery, response.response.rect)
 }
 
 /// Draw the floating tool-options panel when a parametric tool is active.
@@ -261,6 +280,111 @@ pub fn draw_tool_options(
         });
 }
 
+/// Draw the floating preset gallery window.
+///
+/// Clicking a thumbnail immediately selects and applies that preset.
+/// Returns `true` if a preset was clicked (caller should set `apply_preset`).
+pub fn draw_gallery(
+    ctx: &egui::Context,
+    presets: &[config::Preset],
+    thumbnails: &[Option<egui::TextureHandle>],
+    selected_preset: &mut usize,
+    gallery_open: &mut bool,
+) -> bool {
+    let mut apply = false;
+    egui::Window::new("Preset Gallery")
+        .open(gallery_open)
+        .resizable(true)
+        .default_size([560.0, 420.0])
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let thumb_w = 170.0_f32;
+                let thumb_h = 106.0_f32;
+                let spacing = 8.0_f32;
+                let cols = ((ui.available_width() + spacing) / (thumb_w + spacing))
+                    .floor()
+                    .max(1.0) as usize;
+                let thumb_size = egui::Vec2::new(thumb_w, thumb_h);
+
+                egui::Grid::new("preset_gallery_grid")
+                    .num_columns(cols)
+                    .spacing([spacing, spacing])
+                    .show(ui, |ui| {
+                        for (i, preset) in presets.iter().enumerate() {
+                            let is_selected = i == *selected_preset;
+
+                            ui.vertical(|ui| {
+                                let (rect, resp) =
+                                    ui.allocate_exact_size(thumb_size, egui::Sense::click());
+                                let painter = ui.painter();
+
+                                if let Some(Some(handle)) = thumbnails.get(i) {
+                                    painter.image(
+                                        handle.id(),
+                                        rect,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
+                                } else {
+                                    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(35));
+                                    painter.text(
+                                        rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        &preset.name,
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::from_gray(140),
+                                    );
+                                }
+
+                                if is_selected {
+                                    painter.rect_stroke(
+                                        rect,
+                                        egui::CornerRadius::same(2),
+                                        egui::Stroke::new(
+                                            2.0,
+                                            egui::Color32::from_rgb(100, 180, 255),
+                                        ),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                } else if resp.hovered() {
+                                    painter.rect_stroke(
+                                        rect,
+                                        egui::CornerRadius::same(2),
+                                        egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                }
+
+                                let resp = if !preset.description.is_empty() {
+                                    resp.on_hover_text(&preset.description)
+                                } else {
+                                    resp
+                                };
+                                if resp.clicked() {
+                                    *selected_preset = i;
+                                    apply = true;
+                                }
+
+                                ui.label(egui::RichText::new(&preset.name).small());
+                            });
+
+                            if (i + 1) % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+                        // End the final partial row if needed
+                        if !presets.is_empty() && !presets.len().is_multiple_of(cols) {
+                            ui.end_row();
+                        }
+                    });
+            });
+        });
+    apply
+}
+
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
 }
@@ -329,6 +453,64 @@ pub const PALETTE_THEMES: &[(&str, [u32; 8])] = &[
     ("Dark", PALETTE_DARK),
 ];
 
+// ── Preset thumbnails ─────────────────────────────────────────────────────────
+
+fn decode_png_rgba(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let pixels = &buf[..info.buffer_size()];
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgb => pixels
+            .chunks(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255u8])
+            .collect(),
+        png::ColorType::Rgba => pixels.to_vec(),
+        _ => return None,
+    };
+    Some((info.width as usize, info.height as usize, rgba))
+}
+
+/// Try to load a PNG thumbnail for `name`.
+///
+/// Searches: `assets/images/preset-{slug}.png` (builtins),
+/// `assets/presets/{name}.png` (bundled), `presets/{name}.png` (user).
+pub fn load_preset_thumbnail(name: &str, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let slug = name.to_lowercase().replace(' ', "-");
+    let paths = [
+        format!("assets/images/preset-{slug}.png"),
+        format!("assets/presets/{name}.png"),
+        format!("presets/{name}.png"),
+    ];
+    for path in &paths {
+        if let Ok(bytes) = std::fs::read(path)
+            && let Some((w, h, rgba)) = decode_png_rgba(&bytes)
+        {
+            let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+            return Some(ctx.load_texture(
+                format!("preset_thumb_{name}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+    }
+    None
+}
+
+/// Load a thumbnail for every preset; `None` where no matching image is found.
+pub fn load_preset_thumbnails(
+    presets: &[config::Preset],
+    ctx: &egui::Context,
+) -> Vec<Option<egui::TextureHandle>> {
+    presets
+        .iter()
+        .map(|p| load_preset_thumbnail(&p.name, ctx))
+        .collect()
+}
+
+// ── Palette helpers ───────────────────────────────────────────────────────────
+
 /// Extract an egui `Color32` from a packed sRGB `0xFF_BB_GG_RR` palette entry.
 fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
     let packed = palette[idx];
@@ -340,12 +522,7 @@ fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
 }
 
 /// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border.
-pub fn draw_ui(
-    ctx: &egui::Context,
-    sim: &mut SimulationState,
-    presets: &[config::Preset],
-    selected_preset: &mut usize,
-) -> UiResponse {
+pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> UiResponse {
     let mut resp = UiResponse::default();
 
     egui::Window::new("Particle Life")
@@ -483,29 +660,13 @@ pub fn draw_ui(
             egui::CollapsingHeader::new("Presets")
                 .default_open(false)
                 .show(ui, |ui| {
-                    let label = presets
-                        .get(*selected_preset)
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("—");
-                    egui::ComboBox::from_label("")
-                        .selected_text(label)
-                        .show_ui(ui, |ui| {
-                            for (i, preset) in presets.iter().enumerate() {
-                                ui.selectable_value(selected_preset, i, &preset.name);
-                            }
-                        });
-                    if let Some(p) = presets.get(*selected_preset)
-                        && !p.description.is_empty()
-                    {
-                        ui.label(egui::RichText::new(&p.description).weak());
-                    }
                     ui.horizontal(|ui| {
                         if ui
-                            .button("Apply")
-                            .on_hover_text("Apply the selected preset to the simulation")
+                            .button("Gallery…")
+                            .on_hover_text("Browse presets visually with thumbnails")
                             .clicked()
                         {
-                            resp.apply_preset = true;
+                            resp.toggle_gallery = true;
                         }
                         if ui
                             .button("Import…")
@@ -740,6 +901,7 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, s
 ///
 /// The window starts collapsed; the benchmark sub-sections are inside a
 /// [`CollapsingHeader`](egui::CollapsingHeader) so they don't clutter the default view.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_perf_overlay(
     ctx: &egui::Context,
     frame_times: &VecDeque<f32>,
@@ -748,6 +910,7 @@ pub fn draw_perf_overlay(
     runner: &mut benchmark::BenchmarkRunner,
     vsync: bool,
     vsync_available: bool,
+    per_species_count: &[usize],
 ) -> BenchmarkPanelResponse {
     let mut resp = BenchmarkPanelResponse {
         start: false,
@@ -812,6 +975,24 @@ pub fn draw_perf_overlay(
                     ui.label(format!("{n_cells} cells  {density:.0} avg/cell"));
                     ui.end_row();
                 });
+
+            if !per_species_count.is_empty() {
+                ui.separator();
+                egui::CollapsingHeader::new("Species")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let total = per_species_count.iter().sum::<usize>().max(1);
+                        for (i, &count) in per_species_count.iter().enumerate() {
+                            let frac = count as f32 / total as f32;
+                            let color = species_color(i, &sim.palette);
+                            ui.add(
+                                egui::ProgressBar::new(frac)
+                                    .fill(color)
+                                    .text(format!("S{}: {count}", i + 1)),
+                            );
+                        }
+                    });
+            }
 
             ui.separator();
 

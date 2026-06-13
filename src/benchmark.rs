@@ -106,7 +106,11 @@ impl QuickBench {
                     };
                     return true;
                 }
-                self.state = QuickBenchState::Collecting { fps, particles, start };
+                self.state = QuickBenchState::Collecting {
+                    fps,
+                    particles,
+                    start,
+                };
                 false
             }
             other => {
