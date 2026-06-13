@@ -1,11 +1,14 @@
-//! Benchmarking utilities: a lightweight ad-hoc snapshot ([`QuickBench`]) and a
+//! Benchmarking utilities: a lightweight ad-hoc snapshot ([`QuickBench`]), a
 //! full automated suite ([`BenchmarkRunner`]) that cycles through every
-//! combination of built-in preset × particle-count tier and exports CSV results.
+//! combination of built-in preset × particle-count tier and exports CSV results,
+//! and a binary-search capacity finder ([`CapacityBench`]) that locates the
+//! maximum particle count sustainable at a target FPS.
 
 use std::path::Path;
 use std::time::Instant;
 
 use crate::config::{Preset, builtin_presets};
+use crate::simulation::MAX_PARTICLES;
 
 /// A single tier in the full benchmark suite: fixed particle count and fixed world size.
 ///
@@ -442,5 +445,483 @@ impl BenchmarkRunner {
             )?;
         }
         Ok(())
+    }
+}
+
+// ── Capacity benchmark ────────────────────────────────────────────────────────
+
+/// Collect duration for each binary-search iteration.
+const CAPACITY_COLLECT_SECS: f64 = 5.0;
+/// Minimum warmup before checking for fps stability.
+const CAPACITY_MIN_WARMUP_SECS: f64 = 5.0;
+/// Hard warmup cap; transition to collect even if fps hasn't stabilised.
+const CAPACITY_MAX_WARMUP_SECS: f64 = 20.0;
+/// Width of each half-window used by the stability check (seconds).
+const CAPACITY_STABLE_WINDOW_SECS: f64 = 2.0;
+/// Max fractional fps change between the two half-windows to be considered stable.
+const CAPACITY_STABLE_THRESHOLD: f32 = 0.12;
+/// Ecosystem (index 2) forms a tight cluster whose compression time varies with
+/// particle count, requiring cliff-detection rather than a fixed warmup duration.
+const ECOSYSTEM_PRESET_IDX: usize = 2;
+/// Maximum binary-search iterations per preset; geometric bisection needs ~6
+/// to narrow [10K, 2M] to within 15%, so 10 is a comfortable safety margin.
+const CAPACITY_MAX_ITERS: u32 = 10;
+/// Minimum particle count ever tested.  At 10K every preset runs at thousands
+/// of FPS on any discrete GPU, so this is a safe lower bound for any sane
+/// target.  Matches the suite's lowest tier for a clean reference point.
+const CAPACITY_MIN_N: usize = 10_000;
+/// Stop when hi/lo falls below this ratio (~10% window).
+const CAPACITY_CONVERGENCE_RATIO: f64 = 1.10;
+
+/// One result row produced by [`CapacityBench`].
+#[derive(Clone)]
+pub struct CapacityResult {
+    pub preset_name: String,
+    /// Largest particle count measured at or above `target_fps`.
+    /// Zero if not even `CAPACITY_MIN_N` particles achieved the target.
+    pub max_particles: usize,
+    /// Average FPS observed at `max_particles`.  Zero when `max_particles` is zero.
+    pub achieved_fps: f32,
+    pub target_fps: f32,
+    /// True when `max_particles == MAX_PARTICLES`, meaning the GPU can sustain
+    /// the target even at the hard buffer limit — the real capacity is higher.
+    pub capped: bool,
+}
+
+enum CapState {
+    Idle,
+    Warmup {
+        preset_idx: usize,
+        lo: usize,
+        hi: usize,
+        mid: usize,
+        lo_fps: f32,
+        /// FPS measured at `hi`; 0.0 until the first failing test sets it.
+        hi_fps: f32,
+        iter: u32,
+        start: Instant,
+        /// Per-frame (elapsed_secs, fps) samples collected during warmup for
+        /// stability detection.  Dropped when transitioning to Collect.
+        warmup_fps: Vec<(f64, f32)>,
+    },
+    Collect {
+        preset_idx: usize,
+        lo: usize,
+        hi: usize,
+        mid: usize,
+        lo_fps: f32,
+        hi_fps: f32,
+        iter: u32,
+        fps: Vec<f32>,
+        start: Instant,
+    },
+    Done,
+}
+
+/// Action returned by [`CapacityBench::advance`].
+#[must_use]
+pub enum CapacityAction {
+    Continue,
+    /// Apply built-in preset `preset_idx` at `particles` count; world is pinned
+    /// to 1280×720 with `auto_density = false`.
+    LoadPreset {
+        preset_idx: usize,
+        particles: usize,
+    },
+    Done,
+}
+
+/// Progress snapshot returned by [`CapacityBench::progress`].
+pub struct CapacityProgress {
+    pub preset_idx: usize,
+    pub total_presets: usize,
+    pub iter: u32,
+    pub max_iters: u32,
+    pub particles: usize,
+    pub elapsed: f32,
+    pub target_secs: f32,
+    pub is_warmup: bool,
+}
+
+/// Binary-search benchmark that finds the maximum particle count sustainable
+/// at a configurable target FPS for each built-in preset.
+///
+/// World is pinned to 1280×720 with `auto_density = false` (identical to the
+/// suite benchmark) so results are directly comparable to the suite's 500K tier.
+pub struct CapacityBench {
+    state: CapState,
+    pub results: Vec<CapacityResult>,
+    /// Target FPS; editable before a run starts.
+    pub target_fps: f32,
+    pub vp_width: u32,
+    pub vp_height: u32,
+}
+
+impl CapacityBench {
+    pub fn new() -> Self {
+        Self {
+            state: CapState::Idle,
+            results: vec![],
+            target_fps: 30.0,
+            vp_width: 0,
+            vp_height: 0,
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        matches!(
+            self.state,
+            CapState::Warmup { .. } | CapState::Collect { .. }
+        )
+    }
+
+    pub fn is_done(&self) -> bool {
+        matches!(self.state, CapState::Done)
+    }
+
+    /// Returns progress info while running; `None` when idle or done.
+    pub fn progress(&self) -> Option<CapacityProgress> {
+        match &self.state {
+            CapState::Warmup {
+                preset_idx,
+                mid,
+                iter,
+                start,
+                ..
+            } => Some(CapacityProgress {
+                preset_idx: *preset_idx,
+                total_presets: BUILTIN_COUNT,
+                iter: *iter,
+                max_iters: CAPACITY_MAX_ITERS,
+                particles: *mid,
+                elapsed: start.elapsed().as_secs_f32(),
+                target_secs: if *preset_idx == ECOSYSTEM_PRESET_IDX {
+                    CAPACITY_MAX_WARMUP_SECS as f32
+                } else {
+                    CAPACITY_MIN_WARMUP_SECS as f32
+                },
+                is_warmup: true,
+            }),
+            CapState::Collect {
+                preset_idx,
+                mid,
+                iter,
+                start,
+                ..
+            } => Some(CapacityProgress {
+                preset_idx: *preset_idx,
+                total_presets: BUILTIN_COUNT,
+                iter: *iter,
+                max_iters: CAPACITY_MAX_ITERS,
+                particles: *mid,
+                elapsed: start.elapsed().as_secs_f32(),
+                target_secs: CAPACITY_COLLECT_SECS as f32,
+                is_warmup: false,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Build a `Preset` with the given particle count and fixed 1280×720 world.
+    pub fn preset_for(preset_idx: usize, particles: usize) -> Preset {
+        let mut p = builtin_presets()[preset_idx].clone();
+        p.particle_count = particles;
+        p.world_width = 1280.0;
+        p.world_height = 720.0;
+        p.auto_density = false;
+        p
+    }
+
+    /// Kick off a fresh capacity search.  Returns the first `LoadPreset` action.
+    pub fn start(&mut self, vp_w: u32, vp_h: u32) -> CapacityAction {
+        self.results.clear();
+        self.vp_width = vp_w;
+        self.vp_height = vp_h;
+        let mid = Self::initial_mid();
+        self.state = CapState::Warmup {
+            preset_idx: 0,
+            lo: CAPACITY_MIN_N,
+            hi: MAX_PARTICLES,
+            mid,
+            lo_fps: 0.0,
+            hi_fps: 0.0,
+            iter: 0,
+            start: Instant::now(),
+            warmup_fps: vec![],
+        };
+        CapacityAction::LoadPreset {
+            preset_idx: 0,
+            particles: mid,
+        }
+    }
+
+    /// Call once per frame while running.
+    pub fn advance(&mut self, dt: f32) -> CapacityAction {
+        let old = std::mem::replace(&mut self.state, CapState::Idle);
+        match old {
+            CapState::Warmup {
+                preset_idx,
+                lo,
+                hi,
+                mid,
+                lo_fps,
+                hi_fps,
+                iter,
+                start,
+                mut warmup_fps,
+            } => {
+                let elapsed = start.elapsed().as_secs_f64();
+                if dt > 1e-6 {
+                    warmup_fps.push((elapsed, 1.0 / dt));
+                }
+                let ready = elapsed >= CAPACITY_MAX_WARMUP_SECS
+                    || (elapsed >= CAPACITY_MIN_WARMUP_SECS
+                        && Self::fps_stable_for_collect(
+                            &warmup_fps,
+                            elapsed,
+                            self.target_fps,
+                            preset_idx,
+                        ));
+                if ready {
+                    self.state = CapState::Collect {
+                        preset_idx,
+                        lo,
+                        hi,
+                        mid,
+                        lo_fps,
+                        hi_fps,
+                        iter,
+                        fps: vec![],
+                        start: Instant::now(),
+                    };
+                } else {
+                    self.state = CapState::Warmup {
+                        preset_idx,
+                        lo,
+                        hi,
+                        mid,
+                        lo_fps,
+                        hi_fps,
+                        iter,
+                        start,
+                        warmup_fps,
+                    };
+                }
+                CapacityAction::Continue
+            }
+            CapState::Collect {
+                preset_idx,
+                lo,
+                hi,
+                mid,
+                lo_fps,
+                hi_fps,
+                iter,
+                mut fps,
+                start,
+            } => {
+                if dt > 1e-6 {
+                    fps.push(1.0 / dt);
+                }
+                if start.elapsed().as_secs_f64() < CAPACITY_COLLECT_SECS {
+                    self.state = CapState::Collect {
+                        preset_idx,
+                        lo,
+                        hi,
+                        mid,
+                        lo_fps,
+                        hi_fps,
+                        iter,
+                        fps,
+                        start,
+                    };
+                    return CapacityAction::Continue;
+                }
+
+                let n = fps.len().max(1);
+                let avg_fps = fps.iter().sum::<f32>() / n as f32;
+
+                // Update binary search bounds; track fps at both endpoints for interpolation.
+                let (new_lo, new_hi, new_lo_fps, new_hi_fps) = if avg_fps >= self.target_fps {
+                    (mid, hi, avg_fps, hi_fps) // mid passes; raise lo, keep hi_fps
+                } else {
+                    (lo, mid, lo_fps, avg_fps) // mid fails; lower hi, record hi_fps
+                };
+
+                // Try another iteration or converge.
+                let not_converged = iter + 1 < CAPACITY_MAX_ITERS
+                    && (new_hi as f64) / (new_lo as f64).max(1.0) >= CAPACITY_CONVERGENCE_RATIO;
+                if not_converged
+                    && let Some(next_mid) =
+                        Self::next_mid_interp(new_lo, new_hi, new_lo_fps, new_hi_fps, self.target_fps)
+                {
+                    self.state = CapState::Warmup {
+                        preset_idx,
+                        lo: new_lo,
+                        hi: new_hi,
+                        mid: next_mid,
+                        lo_fps: new_lo_fps,
+                        hi_fps: new_hi_fps,
+                        iter: iter + 1,
+                        start: Instant::now(),
+                        warmup_fps: vec![],
+                    };
+                    return CapacityAction::LoadPreset {
+                        preset_idx,
+                        particles: next_mid,
+                    };
+                }
+
+                // Record result for this preset.
+                self.results.push(CapacityResult {
+                    preset_name: builtin_presets()[preset_idx].name.clone(),
+                    max_particles: new_lo,
+                    achieved_fps: new_lo_fps,
+                    target_fps: self.target_fps,
+                    capped: new_lo >= MAX_PARTICLES,
+                });
+
+                let next = preset_idx + 1;
+                if next >= BUILTIN_COUNT {
+                    self.state = CapState::Done;
+                    return CapacityAction::Done;
+                }
+
+                let mid = Self::initial_mid();
+                self.state = CapState::Warmup {
+                    preset_idx: next,
+                    lo: CAPACITY_MIN_N,
+                    hi: MAX_PARTICLES,
+                    mid,
+                    lo_fps: 0.0,
+                    hi_fps: 0.0,
+                    iter: 0,
+                    start: Instant::now(),
+                    warmup_fps: vec![],
+                };
+                CapacityAction::LoadPreset {
+                    preset_idx: next,
+                    particles: mid,
+                }
+            }
+            other => {
+                self.state = other;
+                CapacityAction::Continue
+            }
+        }
+    }
+
+    /// Write results to CSV.
+    pub fn write_csv(&self, path: &Path) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut f = std::fs::File::create(path)?;
+        writeln!(
+            f,
+            "preset,target_fps,max_particles,achieved_fps,capped,vp_w,vp_h"
+        )?;
+        for r in &self.results {
+            writeln!(
+                f,
+                "{},{:.1},{},{:.1},{},{},{}",
+                r.preset_name,
+                r.target_fps,
+                r.max_particles,
+                r.achieved_fps,
+                r.capped,
+                self.vp_width,
+                self.vp_height,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Returns `true` when fps has stabilised enough to start collecting.
+    ///
+    /// For non-Ecosystem presets: any stable 2-second window is sufficient.
+    /// For Ecosystem: also require that fps has fallen from its warmup peak
+    /// (cliff detected) or is clearly above target (no cliff expected at this N).
+    fn fps_stable_for_collect(
+        samples: &[(f64, f32)],
+        elapsed: f64,
+        target_fps: f32,
+        preset_idx: usize,
+    ) -> bool {
+        let w = CAPACITY_STABLE_WINDOW_SECS;
+        let recent: Vec<f32> = samples
+            .iter()
+            .filter(|(t, _)| *t >= elapsed - w)
+            .map(|(_, f)| *f)
+            .collect();
+        let prior: Vec<f32> = samples
+            .iter()
+            .filter(|(t, _)| *t >= elapsed - 2.0 * w && *t < elapsed - w)
+            .map(|(_, f)| *f)
+            .collect();
+        if recent.len() < 3 || prior.len() < 3 {
+            return false;
+        }
+        let r_avg = recent.iter().sum::<f32>() / recent.len() as f32;
+        let p_avg = prior.iter().sum::<f32>() / prior.len() as f32;
+        let change = (r_avg - p_avg).abs() / p_avg.max(1.0);
+        if change >= CAPACITY_STABLE_THRESHOLD {
+            return false; // fps still moving
+        }
+        if preset_idx != ECOSYSTEM_PRESET_IDX {
+            return true; // non-Ecosystem: stable fps is sufficient
+        }
+        // Ecosystem: stable fps must either be well above target (no cliff at
+        // this N) or have dropped from the warmup peak (cliff has settled).
+        let peak = samples
+            .iter()
+            .map(|(_, f)| *f)
+            .fold(0.0_f32, f32::max);
+        r_avg > target_fps * 3.0 || r_avg < peak * 0.8
+    }
+
+    /// Geometric mean of `lo` and `hi`, rounded to the nearest 1000.
+    /// Returns `None` if the result cannot be strictly between `lo` and `hi`.
+    fn next_mid(lo: usize, hi: usize) -> Option<usize> {
+        let mid_f = ((lo as f64).ln() + (hi as f64).ln()) / 2.0;
+        let mid = ((mid_f.exp() as usize + 500) / 1000) * 1000;
+        let mid = mid.clamp(lo + 1, hi.saturating_sub(1)).min(MAX_PARTICLES);
+        if mid <= lo || mid >= hi {
+            None
+        } else {
+            Some(mid)
+        }
+    }
+
+    /// Log-linear interpolation (regula falsi in log-log space) to predict the
+    /// particle count where fps crosses `target_fps`.  Falls back to geometric
+    /// bisection when `hi_fps` is not yet known (0.0) or preconditions aren't met.
+    fn next_mid_interp(
+        lo: usize,
+        hi: usize,
+        lo_fps: f32,
+        hi_fps: f32,
+        target_fps: f32,
+    ) -> Option<usize> {
+        if hi_fps > 0.0 && lo_fps > target_fps && hi_fps < target_fps {
+            let ln_lo = (lo as f64).ln();
+            let ln_hi = (hi as f64).ln();
+            let ln_lo_fps = (lo_fps as f64).ln();
+            let ln_hi_fps = (hi_fps as f64).ln();
+            let ln_target = (target_fps as f64).ln();
+            // t ∈ (0,1): fraction of log-interval where fps == target
+            let t = (ln_lo_fps - ln_target) / (ln_lo_fps - ln_hi_fps);
+            let ln_n = ln_lo + t * (ln_hi - ln_lo);
+            let mid_f = ln_n.exp();
+            let mid = ((mid_f as usize + 500) / 1000) * 1000;
+            let mid = mid.clamp(lo + 1, hi.saturating_sub(1)).min(MAX_PARTICLES);
+            if mid > lo && mid < hi {
+                return Some(mid);
+            }
+        }
+        Self::next_mid(lo, hi)
+    }
+
+    fn initial_mid() -> usize {
+        Self::next_mid(CAPACITY_MIN_N, MAX_PARTICLES)
+            .unwrap_or((CAPACITY_MIN_N + MAX_PARTICLES) / 2)
     }
 }

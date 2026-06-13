@@ -18,6 +18,7 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 - **Preset system** — save, load, and import/export TOML presets; four built-in presets included; presets auto-scale to your window on load
 - **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
 - **Performance overlay:** FPS, frame time min/max/avg, grid stats, density and neighbour estimate, VSync toggle
+- **Capacity benchmark** — binary-search mode finds the maximum sustainable particle count at a configurable target FPS; results exportable as CSV
 - **Screenshot capture** — toolbar button saves a PNG to `screenshots/` with a timestamp filename
 
 ## Gallery
@@ -134,7 +135,7 @@ src/
   app.rs               — ApplicationHandler; owns window, renderer, sim, egui state, camera
   renderer.rs          — wgpu device/surface/pipeline; render() drives one frame
   simulation.rs        — SimulationState; GPU buffers, 5-pass dispatch, spawn, preset apply
-  benchmark.rs         — QuickBench (ad-hoc) and BenchmarkRunner (full suite + CSV export)
+  benchmark.rs         — QuickBench (ad-hoc), BenchmarkRunner (full suite + CSV export), CapacityBench (max-particle binary search at target FPS)
   config.rs            — Preset struct, built-in presets, TOML save/load, session persistence
   ui.rs                — egui panels: toolbar, params, attraction matrix, perf overlay
   shaders/

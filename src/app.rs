@@ -130,6 +130,7 @@ struct AppState {
     // Benchmark
     benchmark: benchmark::BenchmarkRunner,
     quick_bench: benchmark::QuickBench,
+    capacity_bench: benchmark::CapacityBench,
     vsync: bool,
     // True while auto-performance is forcing vsync off; restored to `vsync` on exit.
     vsync_override: bool,
@@ -248,6 +249,7 @@ impl ApplicationHandler for AppHandler {
             per_species_count,
             benchmark: benchmark::BenchmarkRunner::new(),
             quick_bench: benchmark::QuickBench::new(),
+            capacity_bench: benchmark::CapacityBench::new(),
             vsync: true,
             vsync_override: false,
             tool: ui::Tool::Pan,
@@ -585,6 +587,7 @@ impl ApplicationHandler for AppHandler {
                     let selected_preset = &mut state.selected_preset;
                     let benchmark = &mut state.benchmark;
                     let quick_bench = &state.quick_bench;
+                    let capacity_bench = &mut state.capacity_bench;
                     let vsync = state.vsync;
                     let vsync_managed = state.vsync_override;
                     let vsync_available = state.renderer.vsync_toggle_available();
@@ -596,6 +599,8 @@ impl ApplicationHandler for AppHandler {
                         start: false,
                         export_csv: false,
                         start_quick: false,
+                        start_capacity: false,
+                        export_capacity_csv: false,
                         vsync: None,
                     };
                     let mut reset_view = false;
@@ -608,6 +613,7 @@ impl ApplicationHandler for AppHandler {
                             sim,
                             quick_bench,
                             benchmark,
+                            capacity_bench,
                             vsync,
                             vsync_managed,
                             vsync_available,
@@ -669,6 +675,7 @@ impl ApplicationHandler for AppHandler {
                         );
                     }
                     state.sim.respawn(state.renderer.queue());
+                    state.frame_times.clear();
                     state.per_species_count = uniform_species_counts(
                         state.sim.particle_count_gpu() as usize,
                         state.sim.species_count,
@@ -741,6 +748,7 @@ impl ApplicationHandler for AppHandler {
                             as usize)
                             .clamp(100, crate::simulation::MAX_PARTICLES);
                     state.sim.respawn(state.renderer.queue());
+                    state.frame_times.clear();
 
                     state.fit_zoom = compute_fit_zoom(
                         state.sim.world_width,
@@ -850,6 +858,34 @@ impl ApplicationHandler for AppHandler {
                     state
                         .quick_bench
                         .advance(raw_dt, state.sim.particle_count_gpu());
+                }
+
+                // Capacity benchmark
+                if bench_resp.start_capacity {
+                    let sz = window.inner_size();
+                    state.renderer.set_vsync(false);
+                    let action = state.capacity_bench.start(sz.width, sz.height);
+                    state.frame_times.clear();
+                    Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
+                }
+                if bench_resp.export_capacity_csv
+                    && let Some(path) = rfd::FileDialog::new()
+                        .add_filter("CSV", &["csv"])
+                        .set_file_name("capacity.csv")
+                        .save_file()
+                    && let Err(e) = state.capacity_bench.write_csv(&path)
+                {
+                    log::warn!("Capacity CSV export failed: {e}");
+                }
+                if state.capacity_bench.is_running() {
+                    let action = state.capacity_bench.advance(raw_dt);
+                    if matches!(action, benchmark::CapacityAction::Done) {
+                        state.renderer.set_vsync(state.vsync);
+                    }
+                    if matches!(action, benchmark::CapacityAction::LoadPreset { .. }) {
+                        state.frame_times.clear();
+                    }
+                    Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
                 }
 
                 // Apply active tool effects to sim mouse state before dispatch.
@@ -996,6 +1032,21 @@ impl AppHandler {
             // combo_preset() already pins world_width/height and disables auto_density for
             // the tier, so results are comparable across runs regardless of user settings.
             let preset = benchmark::BenchmarkRunner::combo_preset(combo);
+            sim.apply_preset(renderer.queue(), &preset);
+        }
+    }
+
+    fn handle_capacity_action(
+        sim: &mut SimulationState,
+        renderer: &WgpuState,
+        action: benchmark::CapacityAction,
+    ) {
+        if let benchmark::CapacityAction::LoadPreset {
+            preset_idx,
+            particles,
+        } = action
+        {
+            let preset = benchmark::CapacityBench::preset_for(preset_idx, particles);
             sim.apply_preset(renderer.queue(), &preset);
         }
     }

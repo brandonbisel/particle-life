@@ -42,6 +42,10 @@ pub struct BenchmarkPanelResponse {
     pub export_csv: bool,
     /// Start a quick single-point benchmark at the current particle count.
     pub start_quick: bool,
+    /// Start the capacity binary-search benchmark.
+    pub start_capacity: bool,
+    /// Export capacity results to CSV.
+    pub export_capacity_csv: bool,
     /// `Some(v)` when the user toggled the global vsync checkbox.
     pub vsync: Option<bool>,
 }
@@ -975,6 +979,7 @@ pub fn draw_perf_overlay(
     sim: &SimulationState,
     quick_bench: &benchmark::QuickBench,
     runner: &mut benchmark::BenchmarkRunner,
+    capacity: &mut benchmark::CapacityBench,
     vsync: bool,
     vsync_managed: bool,
     vsync_available: bool,
@@ -984,6 +989,8 @@ pub fn draw_perf_overlay(
         start: false,
         export_csv: false,
         start_quick: false,
+        start_capacity: false,
+        export_capacity_csv: false,
         vsync: None,
     };
 
@@ -1243,7 +1250,117 @@ pub fn draw_perf_overlay(
                         }
                     }
                 });
+
+            ui.separator();
+
+            // Capacity benchmark: binary search for max particles at target FPS
+            let any_bench_running = runner.is_running() || quick_bench.is_running();
+            egui::CollapsingHeader::new("Capacity Benchmark")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(
+                        "Binary-searches for the maximum particle count that sustains a target \
+                         FPS at fixed 1280×720. Takes ~4 minutes for 4 presets.",
+                    );
+                    ui.add_space(4.0);
+
+                    if capacity.is_running() {
+                        if let Some(p) = capacity.progress() {
+                            let preset_name =
+                                crate::config::builtin_presets()[p.preset_idx].name.clone();
+                            let phase = if p.is_warmup { "Warmup" } else { "Collecting" };
+                            ui.label(format!(
+                                "Preset {}/{} — {} — iter {}/{}",
+                                p.preset_idx + 1,
+                                p.total_presets,
+                                preset_name,
+                                p.iter + 1,
+                                p.max_iters,
+                            ));
+                            ui.label(format!("Testing {} particles — {phase}", fmt_particles(p.particles)));
+                            ui.add(
+                                egui::ProgressBar::new(p.elapsed / p.target_secs)
+                                    .show_percentage(),
+                            );
+                        }
+                    } else if capacity.is_done() && !capacity.results.is_empty() {
+                        ui.label(format!("Results — target {:.0} fps:", capacity.target_fps));
+                        egui::Grid::new("cap_results_grid")
+                            .num_columns(3)
+                            .striped(true)
+                            .min_col_width(55.0)
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Preset").strong());
+                                ui.label(egui::RichText::new("Max particles").strong());
+                                ui.label(egui::RichText::new("Achieved fps").strong());
+                                ui.end_row();
+                                for r in &capacity.results {
+                                    ui.label(&r.preset_name);
+                                    if r.max_particles == 0 {
+                                        ui.label("< 1,000")
+                                            .on_hover_text("Target not achievable even at minimum");
+                                        ui.label("—");
+                                    } else if r.capped {
+                                        ui.label(format!("≥ {:>9}", fmt_particles(r.max_particles)))
+                                            .on_hover_text(
+                                                "GPU can sustain the target even at the 2M particle limit",
+                                            );
+                                        ui.label(format!("{:.0}", r.achieved_fps));
+                                    } else {
+                                        ui.label(format!("{:>9}", fmt_particles(r.max_particles)));
+                                        ui.label(format!("{:.0}", r.achieved_fps));
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        ui.add_space(4.0);
+                        if ui
+                            .button("Export CSV…")
+                            .on_hover_text("Save capacity results to a CSV file")
+                            .clicked()
+                        {
+                            resp.export_capacity_csv = true;
+                        }
+                        ui.add_space(2.0);
+                    }
+
+                    if !capacity.is_running() {
+                        // Target FPS setting (disabled during run)
+                        ui.horizontal(|ui| {
+                            ui.label("Target FPS:");
+                            ui.add(
+                                egui::DragValue::new(&mut capacity.target_fps)
+                                    .range(10.0..=240.0)
+                                    .speed(1.0)
+                                    .suffix(" fps"),
+                            );
+                        });
+                        ui.add_space(2.0);
+                        let btn = ui
+                            .add_enabled(
+                                !any_bench_running,
+                                egui::Button::new("Start Capacity Bench"),
+                            )
+                            .on_hover_text(
+                                "Binary-search each preset for the highest particle count that \
+                                 sustains the target FPS (adaptive warmup 5–20s + 5s collect; Ecosystem waits for cluster to stabilise)",
+                            );
+                        if btn.clicked() {
+                            resp.start_capacity = true;
+                        }
+                    }
+                });
         });
 
     resp
+}
+
+fn fmt_particles(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }

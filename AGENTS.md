@@ -63,7 +63,7 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 | `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
 | `simulation.rs` | `SimulationState`; GPU buffers, 5-pass compute dispatch, preset apply, spawn |
 | `config.rs` | `Preset` struct, four built-in presets, TOML I/O, session persistence |
-| `benchmark.rs` | `QuickBench` (ad-hoc) and `BenchmarkRunner` (full suite + CSV export) |
+| `benchmark.rs` | `QuickBench` (ad-hoc), `BenchmarkRunner` (full suite + CSV export), `CapacityBench` (binary-search max-particle finder at target FPS) |
 | `ui.rs` | All egui draw functions; returns response structs — no app state owned here |
 
 ### Data Flow Per Frame
@@ -195,7 +195,7 @@ The `attraction` field in a preset is a compact `species_count × species_count`
 
 **Preset loading in normal UI flow** (`app.rs`): after calling `apply_preset()`, `app.rs` overrides `world_width/height/particle_count` to preserve the preset's density at the current window size. The preset's stored world dimensions are used only to compute the density ratio — they are not applied directly.
 
-**Benchmark loading**: `BenchmarkRunner::combo_preset()` returns a preset with `world_width`/`world_height`/`auto_density` pinned to the tier's fixed values. The benchmark handler calls `apply_preset()` directly without the density-scaling override, ensuring reproducible results.
+**Benchmark loading**: `BenchmarkRunner::combo_preset()` and `CapacityBench::preset_for()` both return presets with `world_width`/`world_height` pinned to 1280×720 and `auto_density = false`. The benchmark handler calls `apply_preset()` directly without the density-scaling override, ensuring reproducible results.
 
 ## Attraction Matrix
 

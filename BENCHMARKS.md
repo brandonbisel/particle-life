@@ -70,6 +70,23 @@ Average FPS by preset and particle count (vsync off):
 
 ---
 
+## Linux — Capacity Benchmark (AMD Radeon RX 9070 XT)
+
+Maximum particle count at 30 fps (1280×720, vsync off, `auto_density = false`):
+
+| Preset    | Max Particles | Achieved FPS |
+|-----------|--------------:|-------------:|
+| Clusters  |       614,000 |         30.8 |
+| Chains    |       607,000 |         30.6 |
+| Ecosystem |       448,000 |         32.9 |
+| Symbiosis |       433,000 |         30.7 |
+
+Results match the performance tier ordering from the suite: Clusters and Chains have near-identical capacity (~610K); Symbiosis is ~30% lower due to grid hotspots from mixed-species blobs; Ecosystem is ~27% lower than Symbiosis due to its extreme tight-cluster hotspot.
+
+**Method:** binary search with log-linear interpolation (regula falsi in log-log space) to bias test points toward the predicted fps crossover. Adaptive warmup: transitions to collect only once two consecutive 2-second fps windows agree within 12%, with a 5s minimum and 20s hard cap. Ecosystem uses the full cliff-detection path — warmup holds until fps drops below 80% of its peak (cluster settled). 5s collect per iteration, 10% convergence window (hi/lo ≤ 1.10).
+
+---
+
 ## macOS — Mac Mini (M4)
 
 > **Caveat:** These results were recorded before the fps-counter fix. The `dt.min(0.05)` cap was applied to fps samples, so any frame taking longer than 50 ms was reported as exactly 20 fps rather than its true rate. Rows with `Min FPS = 20` are affected; the true minimum (and in some cases the true average) will be lower. A corrected re-run is pending.
