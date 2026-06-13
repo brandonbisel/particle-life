@@ -25,5 +25,5 @@ jobs:
           path-to-signatures: signatures/cla.json
           path-to-document: >-
             https://github.com/brandonbisel/particle-life/blob/main/CONTRIBUTORS.md
-          branch: dev
+          branch: cla-signatures
           allowlist: brandonbisel,bot*
