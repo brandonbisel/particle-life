@@ -104,6 +104,9 @@ pub struct SimulationState {
     pub mouse_y: f32,
     pub mouse_strength: f32, // positive = attract, negative = repel, 0 = inactive
     pub mouse_range: f32,    // world-space radius of influence
+    /// When true, `respawn` draws species population fractions from a Dirichlet distribution
+    /// instead of distributing particles equally across all species.
+    pub random_species_dist: bool,
 
     gpu_particle_count: u32, // may exceed particles.len() after spawn_particles calls
     particles: Vec<Particle>, // CPU copy used for respawn seeding only
@@ -514,6 +517,7 @@ impl SimulationState {
             mouse_y: 0.5,
             mouse_strength: 0.0,
             mouse_range: 0.1,
+            random_species_dist: false,
             gpu_particle_count: 0,
             particles: Vec::new(),
             rng,
@@ -547,14 +551,41 @@ impl SimulationState {
         let n = self.particle_count.min(MAX_PARTICLES);
         self.particles.clear();
         self.particles.reserve(n);
-        for i in 0..n {
-            let species = i % self.species_count;
-            self.particles.push(Particle {
-                position: [self.rng.next_f32(), self.rng.next_f32()],
-                velocity: [self.rng.range(-0.05, 0.05), self.rng.range(-0.05, 0.05)],
-                color: self.palette[species],
-                species: species as u32,
-            });
+        if self.random_species_dist && self.species_count > 1 {
+            // Dirichlet(1,...,1): normalized exponential variates give a uniform
+            // distribution over the simplex, producing truly random population fractions.
+            let raw: Vec<f32> = (0..self.species_count)
+                .map(|_| -self.rng.next_f32().max(1e-7_f32).ln())
+                .collect();
+            let total: f32 = raw.iter().sum();
+            let mut counts = vec![0usize; self.species_count];
+            let mut assigned = 0usize;
+            for i in 0..self.species_count - 1 {
+                let c = ((raw[i] / total) * n as f32).round() as usize;
+                counts[i] = c;
+                assigned += c;
+            }
+            counts[self.species_count - 1] = n.saturating_sub(assigned);
+            for (species, &c) in counts.iter().enumerate() {
+                for _ in 0..c {
+                    self.particles.push(Particle {
+                        position: [self.rng.next_f32(), self.rng.next_f32()],
+                        velocity: [self.rng.range(-0.05, 0.05), self.rng.range(-0.05, 0.05)],
+                        color: self.palette[species],
+                        species: species as u32,
+                    });
+                }
+            }
+        } else {
+            for i in 0..n {
+                let species = i % self.species_count;
+                self.particles.push(Particle {
+                    position: [self.rng.next_f32(), self.rng.next_f32()],
+                    velocity: [self.rng.range(-0.05, 0.05), self.rng.range(-0.05, 0.05)],
+                    color: self.palette[species],
+                    species: species as u32,
+                });
+            }
         }
         queue.write_buffer(&self.particle_buf, 0, bytemuck::cast_slice(&self.particles));
         self.gpu_particle_count = self.particles.len() as u32;
@@ -811,6 +842,21 @@ impl SimulationState {
     /// The GPU buffer containing all particle data (vertex + storage).
     pub fn particle_buffer(&self) -> &wgpu::Buffer {
         &self.particle_buf
+    }
+
+    /// Per-species particle counts from the last `respawn()`.
+    ///
+    /// Does not include particles added via `spawn_particles()` — the caller
+    /// (`app.rs`) tracks those separately and adds them on top.
+    pub fn species_counts(&self) -> Vec<usize> {
+        let mut counts = vec![0usize; self.species_count];
+        for p in &self.particles {
+            let s = p.species as usize;
+            if s < counts.len() {
+                counts[s] += 1;
+            }
+        }
+        counts
     }
 
     /// Number of particles currently active on the GPU, including any transiently spawned ones.

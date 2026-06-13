@@ -19,18 +19,6 @@ use winit::{
 
 use crate::{benchmark, config, icon, renderer::WgpuState, simulation::SimulationState, ui};
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Compute per-species counts assuming uniform distribution across `n_species`.
-fn uniform_species_counts(total: usize, n_species: usize) -> Vec<usize> {
-    if n_species == 0 {
-        return vec![];
-    }
-    let per = total / n_species;
-    let rem = total % n_species;
-    (0..n_species).map(|i| per + usize::from(i < rem)).collect()
-}
-
 // ── Camera ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy)]
@@ -216,8 +204,7 @@ impl ApplicationHandler for AppHandler {
         }
         renderer.update_palette(&sim.palette);
         let fit_zoom = compute_fit_zoom(world_width, world_height, size.width, size.height);
-        let per_species_count =
-            uniform_species_counts(sim.particle_count_gpu() as usize, sim.species_count);
+        let per_species_count = sim.species_counts();
 
         let egui_ctx = egui::Context::default();
         let mut fonts = egui::FontDefinitions::default();
@@ -504,10 +491,7 @@ impl ApplicationHandler for AppHandler {
                                 "0" => state.camera = Camera::default_view(),
                                 "r" => {
                                     state.sim.respawn(state.renderer.queue());
-                                    state.per_species_count = uniform_species_counts(
-                                        state.sim.particle_count_gpu() as usize,
-                                        state.sim.species_count,
-                                    );
+                                    state.per_species_count = state.sim.species_counts();
                                 }
                                 "s" => state.pending_screenshot = true,
                                 _ => {}
@@ -683,10 +667,7 @@ impl ApplicationHandler for AppHandler {
                     }
                     state.sim.respawn(state.renderer.queue());
                     state.frame_times.clear();
-                    state.per_species_count = uniform_species_counts(
-                        state.sim.particle_count_gpu() as usize,
-                        state.sim.species_count,
-                    );
+                    state.per_species_count = state.sim.species_counts();
                 }
                 if ui_resp.randomize {
                     state.sim.randomize_attraction();
@@ -764,10 +745,7 @@ impl ApplicationHandler for AppHandler {
                         sz.height,
                     );
                     state.camera = Camera::default_view();
-                    state.per_species_count = uniform_species_counts(
-                        state.sim.particle_count_gpu() as usize,
-                        state.sim.species_count,
-                    );
+                    state.per_species_count = state.sim.species_counts();
                     state.renderer.update_palette(&state.sim.palette);
                 }
                 if ui_resp.import_preset
@@ -1049,7 +1027,11 @@ impl AppHandler {
             // combo_preset() already pins world_width/height and disables auto_density for
             // the tier, so results are comparable across runs regardless of user settings.
             let preset = benchmark::BenchmarkRunner::combo_preset(combo);
+            // Benchmarks always use equal species distribution for reproducibility.
+            let saved_dist = sim.random_species_dist;
+            sim.random_species_dist = false;
             sim.apply_preset(renderer.queue(), &preset);
+            sim.random_species_dist = saved_dist;
         }
     }
 
@@ -1064,7 +1046,11 @@ impl AppHandler {
         } = action
         {
             let preset = benchmark::CapacityBench::preset_for(preset_idx, particles);
+            // Benchmarks always use equal species distribution for reproducibility.
+            let saved_dist = sim.random_species_dist;
+            sim.random_species_dist = false;
             sim.apply_preset(renderer.queue(), &preset);
+            sim.random_species_dist = saved_dist;
         }
     }
 }

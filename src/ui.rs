@@ -585,6 +585,11 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bo
                     sim.paused = !sim.paused;
                 }
             });
+            ui.checkbox(&mut sim.random_species_dist, "Random population")
+                .on_hover_text(
+                    "When enabled, Respawn assigns each species a random share of particles \
+                     instead of equal shares",
+                );
 
             ui.separator();
 
@@ -1131,11 +1136,12 @@ pub fn draw_perf_overlay(
                         for (i, &count) in per_species_count.iter().enumerate() {
                             let frac = count as f32 / total as f32;
                             let color = species_color(i, &sim.palette);
-                            ui.add(
-                                egui::ProgressBar::new(frac)
-                                    .fill(color)
-                                    .text(format!("S{}: {count}", i + 1)),
-                            );
+                            ui.horizontal(|ui| {
+                                // Species label in its own color; count in the default text
+                                // color so it stays readable regardless of the species hue.
+                                ui.colored_label(color, format!("S{}:", i + 1));
+                                ui.label(format!("{count} ({:.0}%)", frac * 100.0));
+                            });
                         }
                     });
             }
