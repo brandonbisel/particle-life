@@ -164,6 +164,12 @@ src/
 
 This project was developed with the help of [Claude Code](https://claude.ai/code) (Anthropic). AI assistance was used throughout: architecture decisions, GPU pipeline implementation, UI, benchmarking, documentation, and code review.
 
+## Contributing
+
+Contributions are welcome! Before your first pull request, please read the
+[Contributor License Agreement](CONTRIBUTORS.md). The CLA Assistant bot will
+prompt you to sign when you open a PR.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
