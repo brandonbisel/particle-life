@@ -131,6 +131,8 @@ struct AppState {
     benchmark: benchmark::BenchmarkRunner,
     quick_bench: benchmark::QuickBench,
     vsync: bool,
+    // True while auto-performance is forcing vsync off; restored to `vsync` on exit.
+    vsync_override: bool,
 
     // Pending one-shot actions triggered by keyboard shortcuts
     pending_screenshot: bool,
@@ -247,6 +249,7 @@ impl ApplicationHandler for AppHandler {
             benchmark: benchmark::BenchmarkRunner::new(),
             quick_bench: benchmark::QuickBench::new(),
             vsync: true,
+            vsync_override: false,
             tool: ui::Tool::Pan,
             tool_range: 0.1,
             mouse_strength: 2.0,
@@ -522,6 +525,39 @@ impl ApplicationHandler for AppHandler {
                     state.frame_times.pop_front();
                 }
 
+                // Auto-performance: adjust world size toward perf_target_fps.
+                let perf_active =
+                    state.sim.auto_density && state.sim.perf_auto && !state.benchmark.is_running();
+                if perf_active {
+                    let n = state.frame_times.len();
+                    let avg_fps = if n > 0 {
+                        n as f32 / state.frame_times.iter().sum::<f32>()
+                    } else {
+                        0.0
+                    };
+                    state.sim.perf_world_adjust(avg_fps, dt);
+                    // Pin world_width to viewport aspect after every adjustment to
+                    // prevent float drift and ensure fit_zoom stays accurate.
+                    let vp = window.inner_size();
+                    let vp_aspect = vp.width as f32 / vp.height as f32;
+                    state.sim.world_width = state.sim.world_height * vp_aspect;
+                    state.fit_zoom = compute_fit_zoom(
+                        state.sim.world_width,
+                        state.sim.world_height,
+                        vp.width,
+                        vp.height,
+                    );
+                }
+
+                // Auto-performance forces vsync off so the FPS controller sees real GPU load.
+                // Restore the user's preference when the mode is deactivated.
+                if perf_active != state.vsync_override {
+                    state.vsync_override = perf_active;
+                    if !state.benchmark.is_running() {
+                        state.renderer.set_vsync(state.vsync && !perf_active);
+                    }
+                }
+
                 // --- Build egui ---
                 let raw_input = state.egui_state.take_egui_input(&window);
 
@@ -547,6 +583,7 @@ impl ApplicationHandler for AppHandler {
                     let benchmark = &mut state.benchmark;
                     let quick_bench = &state.quick_bench;
                     let vsync = state.vsync;
+                    let vsync_managed = state.vsync_override;
                     let vsync_available = state.renderer.vsync_toggle_available();
                     let preset_thumbnails = &state.preset_thumbnails;
                     let gallery_open = &mut state.gallery_open;
@@ -569,6 +606,7 @@ impl ApplicationHandler for AppHandler {
                             quick_bench,
                             benchmark,
                             vsync,
+                            vsync_managed,
                             vsync_available,
                             per_species_count,
                         );
@@ -616,6 +654,17 @@ impl ApplicationHandler for AppHandler {
                     state.gallery_open = !state.gallery_open;
                 }
                 if ui_resp.respawn {
+                    // In auto-density mode, resize the world before spawning so density stays
+                    // constant at the new particle count.
+                    if state.sim.auto_density {
+                        state.sim.auto_world_size();
+                        state.fit_zoom = compute_fit_zoom(
+                            state.sim.world_width,
+                            state.sim.world_height,
+                            window.inner_size().width,
+                            window.inner_size().height,
+                        );
+                    }
                     state.sim.respawn(state.renderer.queue());
                     state.per_species_count = uniform_species_counts(
                         state.sim.particle_count_gpu() as usize,
@@ -655,6 +704,7 @@ impl ApplicationHandler for AppHandler {
                     let sz = window.inner_size();
                     state.sim.world_width = sz.width as f32;
                     state.sim.world_height = sz.height as f32;
+                    state.sim.auto_density = false; // manual override disables auto-density
                     state.fit_zoom = compute_fit_zoom(
                         state.sim.world_width,
                         state.sim.world_height,
@@ -665,13 +715,37 @@ impl ApplicationHandler for AppHandler {
                 if ui_resp.apply_preset
                     && let Some(preset) = state.preset_library.get(state.selected_preset).cloned()
                 {
+                    // Capture preset density before apply_preset overwrites the sim state.
+                    let preset_density =
+                        preset.particle_count as f32 / (preset.world_width * preset.world_height);
+
                     state.sim.apply_preset(state.renderer.queue(), &preset);
+
+                    // Scale world to current window while preserving preset particle density.
+                    // If density × window_area would exceed MAX_PARTICLES, shrink the world
+                    // so the cap is respected while still matching the window aspect ratio.
+                    let sz = window.inner_size();
+                    let aspect = sz.width as f32 / sz.height as f32;
+                    let window_area = sz.width as f32 * sz.height as f32;
+                    let max_area =
+                        crate::simulation::MAX_PARTICLES as f32 / preset_density.max(1e-10);
+                    let target_area = window_area.min(max_area);
+                    let world_h = (target_area / aspect).sqrt();
+                    state.sim.world_height = world_h;
+                    state.sim.world_width = world_h * aspect;
+                    state.sim.particle_count =
+                        ((preset_density * state.sim.world_width * state.sim.world_height)
+                            as usize)
+                            .clamp(100, crate::simulation::MAX_PARTICLES);
+                    state.sim.respawn(state.renderer.queue());
+
                     state.fit_zoom = compute_fit_zoom(
                         state.sim.world_width,
                         state.sim.world_height,
-                        window.inner_size().width,
-                        window.inner_size().height,
+                        sz.width,
+                        sz.height,
                     );
+                    state.camera = Camera::default_view();
                     state.per_species_count = uniform_species_counts(
                         state.sim.particle_count_gpu() as usize,
                         state.sim.species_count,
@@ -913,14 +987,13 @@ impl AppHandler {
         sim: &mut SimulationState,
         renderer: &WgpuState,
         action: benchmark::BenchmarkAction,
-        runner: &benchmark::BenchmarkRunner,
+        _runner: &benchmark::BenchmarkRunner,
     ) {
         if let benchmark::BenchmarkAction::LoadCombo(combo) = action {
+            // combo_preset() already pins world_width/height and disables auto_density for
+            // the tier, so results are comparable across runs regardless of user settings.
             let preset = benchmark::BenchmarkRunner::combo_preset(combo);
             sim.apply_preset(renderer.queue(), &preset);
-            // Override world size to match benchmark viewport for consistent results
-            sim.world_width = runner.vp_width as f32;
-            sim.world_height = runner.vp_height as f32;
         }
     }
 }

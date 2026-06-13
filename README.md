@@ -1,6 +1,6 @@
 # Particle Life
 
-A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written in Rust. Up to 500,000 particles interact via emergent attraction/repulsion rules, running entirely on the GPU at real-time frame rates.
+A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written in Rust. Up to 2,000,000 particles interact via emergent attraction/repulsion rules, running entirely on the GPU at real-time frame rates.
 
 ![Particle Life](https://img.shields.io/badge/language-Rust-orange) ![GPU](https://img.shields.io/badge/GPU-wgpu%2024-blue) ![UI](https://img.shields.io/badge/UI-egui%200.31-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen) ![CI](https://github.com/brandonbisel/particle-life/actions/workflows/ci.yml/badge.svg?branch=dev)
 
@@ -9,15 +9,15 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 ## Features
 
 - **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
-- **500K particles** at 26–47 fps (preset-dependent; see [Benchmarks](BENCHMARKS.md))
+- **500K particles** at 26–47 fps at fixed world size; comparable frame rates at 2M with auto-density
 - **8 species** with a fully editable N×N attraction matrix
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
-- **Configurable world size** — independent of window size; zoom/pan always shows the full world at fit
+- **Physical world size** — scales the simulation domain; auto-density mode keeps GPU load linear with particle count by growing the world as particles increase
 - **Configurable palette** — five built-in themes (Default, Vivid, Neon, Pastel, Dark), per-species color pickers, and randomize
-- **Preset system** — save, load, and import/export TOML presets; four built-in presets included
+- **Preset system** — save, load, and import/export TOML presets; four built-in presets included; presets auto-scale to your window on load
 - **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
-- **Performance overlay:** FPS, frame time min/max/avg, grid stats, VSync toggle
+- **Performance overlay:** FPS, frame time min/max/avg, grid stats, density and neighbour estimate, VSync toggle
 - **Screenshot capture** — toolbar button saves a PNG to `screenshots/` with a timestamp filename
 
 ## Gallery
@@ -58,7 +58,7 @@ All physics runs on the GPU via [wgpu](https://github.com/gfx-rs/wgpu) compute s
 
 The reorder pass is critical: it converts random pointer-chasing in the force loop into sequential memory reads, recovering near-brute-force GPU cache throughput at large N.
 
-**Grid parameters:** cell size = `r_max / 2`, so `grid_w = max(5, floor(2 / r_max))`. At default `r_max = 0.08`: 25×25 = 625 cells, ~80 particles/cell at 50K.
+**Grid parameters:** cell size = `r_max_norm / 2`, so `grid_w = max(5, floor(2 / r_max_norm))`. The effective `r_max_norm = r_max × 720 / world_height` shrinks as the world grows, producing a finer grid with fewer neighbours per particle. At default settings (r_max=0.08, world_height=720): 25×25 = 625 cells, ~80 particles/cell at 50K. At 500K with auto-density: ~250×250 = 62,500 cells, ~8 particles/cell — same GPU cost per particle.
 
 ### Rendering
 
@@ -150,13 +150,13 @@ src/
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `r_min` | 0.025 | Hard-core repulsion radius |
-| `r_max` | 0.08 | Interaction cutoff |
+| `r_min` | 0.025 | Hard-core repulsion radius (fraction of reference world height 720) |
+| `r_max` | 0.08 | Interaction cutoff (fraction of reference world height 720); effective GPU radius scales with world size |
 | `friction` | 0.5 | Velocity half-life ~1.4s |
 | `force_scale` | 0.007 | Global force multiplier |
-| `particle_radius` | 1.5 px | Rendered size |
-| `world_width/height` | 1280 × 720 | Simulation world dimensions (units) |
-| Max particles | 500,000 | Hard GPU buffer limit |
+| `particle_radius` | 1.5 | Rendered size in world units |
+| `world_width/height` | 1280 × 720 | Simulation world dimensions; affects interaction density |
+| Max particles | 2,000,000 | Hard GPU buffer limit (~90 MB VRAM) |
 | Max species | 8 | Attraction matrix dimension |
 
 ## AI Assistance

@@ -7,8 +7,42 @@ use std::time::Instant;
 
 use crate::config::{Preset, builtin_presets};
 
-/// Particle counts used in each tier of the full benchmark suite.
-pub const BENCHMARK_TIERS: [usize; 4] = [10_000, 50_000, 100_000, 500_000];
+/// A single tier in the full benchmark suite: fixed particle count and fixed world size.
+///
+/// World size is pinned per-tier so results remain comparable across runs regardless of the
+/// user's current auto-density setting.  All tiers use the canonical 1280×720 world so the
+/// suite measures raw GPU throughput at increasing density (O(n²) scaling intentional).
+#[derive(Clone, Copy)]
+pub struct BenchmarkTier {
+    pub particles: usize,
+    pub world_width: f32,
+    pub world_height: f32,
+}
+
+/// Tiers used in the full benchmark suite.
+pub const BENCHMARK_TIERS: [BenchmarkTier; 4] = [
+    BenchmarkTier {
+        particles: 10_000,
+        world_width: 1280.0,
+        world_height: 720.0,
+    },
+    BenchmarkTier {
+        particles: 50_000,
+        world_width: 1280.0,
+        world_height: 720.0,
+    },
+    BenchmarkTier {
+        particles: 100_000,
+        world_width: 1280.0,
+        world_height: 720.0,
+    },
+    BenchmarkTier {
+        particles: 500_000,
+        world_width: 1280.0,
+        world_height: 720.0,
+    },
+];
+
 const BUILTIN_COUNT: usize = 4;
 // Time-based targets: physics are dt-driven so wall-clock seconds = simulation seconds.
 // 5s warmup lets friction decay initial conditions (~3.6 half-lives) and structures form.
@@ -161,6 +195,9 @@ pub struct BenchmarkResult {
     pub preset_name: String,
     pub particle_count: usize,
     pub species_count: usize,
+    /// Fixed world dimensions used for this tier (from [`BENCHMARK_TIERS`]).
+    pub world_width: f32,
+    pub world_height: f32,
     pub avg_fps: f32,
     pub min_fps: f32,
     pub max_fps: f32,
@@ -239,11 +276,16 @@ impl BenchmarkRunner {
         combo % BENCHMARK_TIERS.len()
     }
 
-    /// Returns the Preset for a given combo with particle_count already set.
+    /// Returns the Preset for a given combo with particle_count, world size, and auto_density
+    /// set to the tier's fixed values so results are comparable across runs.
     pub fn combo_preset(combo: usize) -> Preset {
         let presets = builtin_presets();
         let mut p = presets[Self::combo_preset_idx(combo)].clone();
-        p.particle_count = BENCHMARK_TIERS[Self::combo_tier_idx(combo)];
+        let tier = BENCHMARK_TIERS[Self::combo_tier_idx(combo)];
+        p.particle_count = tier.particles;
+        p.world_width = tier.world_width;
+        p.world_height = tier.world_height;
+        p.auto_density = false;
         p
     }
 
@@ -350,14 +392,17 @@ impl BenchmarkRunner {
     fn summarize(combo: usize, fps: &[f32], wall_secs: f64, vsync: bool) -> BenchmarkResult {
         let presets = builtin_presets();
         let p = &presets[Self::combo_preset_idx(combo)];
+        let tier = BENCHMARK_TIERS[Self::combo_tier_idx(combo)];
         let n = fps.len().max(1);
         let avg = fps.iter().sum::<f32>() / n as f32;
         let min = fps.iter().cloned().fold(f32::MAX, f32::min);
         let max = fps.iter().cloned().fold(0.0_f32, f32::max);
         BenchmarkResult {
             preset_name: p.name.clone(),
-            particle_count: BENCHMARK_TIERS[Self::combo_tier_idx(combo)],
+            particle_count: tier.particles,
             species_count: p.species_count,
+            world_width: tier.world_width,
+            world_height: tier.world_height,
             avg_fps: avg,
             min_fps: if fps.is_empty() { 0.0 } else { min },
             max_fps: if fps.is_empty() { 0.0 } else { max },
@@ -374,15 +419,17 @@ impl BenchmarkRunner {
         let mut f = std::fs::File::create(path)?;
         writeln!(
             f,
-            "preset,particles,species,vp_w,vp_h,avg_fps,min_fps,max_fps,avg_frame_ms,frames,wall_secs,vsync"
+            "preset,particles,species,world_w,world_h,vp_w,vp_h,avg_fps,min_fps,max_fps,avg_frame_ms,frames,wall_secs,vsync"
         )?;
         for r in &self.results {
             writeln!(
                 f,
-                "{},{},{},{},{},{:.1},{:.1},{:.1},{:.2},{},{:.1},{}",
+                "{},{},{},{},{},{},{},{:.1},{:.1},{:.1},{:.2},{},{:.1},{}",
                 r.preset_name,
                 r.particle_count,
                 r.species_count,
+                r.world_width,
+                r.world_height,
                 self.vp_width,
                 self.vp_height,
                 r.avg_fps,

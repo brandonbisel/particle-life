@@ -330,7 +330,7 @@ impl WgpuState {
 
         self.particle_radius = sim.particle_radius;
         let world_aspect = sim.world_aspect();
-        let particle_radius_norm = sim.particle_radius / sim.world_height;
+        let particle_radius_norm = sim.particle_radius / self.surface_config.height as f32;
         self.update_globals(
             camera_center,
             shader_zoom,
@@ -468,7 +468,7 @@ impl WgpuState {
         });
 
         let world_aspect = sim.world_aspect();
-        let particle_radius_norm = sim.particle_radius / sim.world_height;
+        let particle_radius_norm = sim.particle_radius / height as f32;
         self.update_globals(
             camera_center,
             shader_zoom,

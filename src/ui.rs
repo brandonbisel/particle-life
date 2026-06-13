@@ -529,7 +529,7 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> UiResponse {
         .anchor(egui::Align2::LEFT_TOP, [10.0, 10.0])
         .show(ctx, |ui| {
             ui.add(
-                egui::Slider::new(&mut sim.particle_count, 100..=500_000)
+                egui::Slider::new(&mut sim.particle_count, 100..=2_000_000)
                     .text("Particles")
                     .logarithmic(true),
             )
@@ -543,7 +543,10 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> UiResponse {
                     .text("Radius")
                     .step_by(0.5),
             )
-            .on_hover_text("Visual rendering radius of each particle in pixels");
+            .on_hover_text(
+                "Visual radius of each particle in screen pixels.  \
+                 Scales with camera zoom; independent of world size.",
+            );
             ui.horizontal(|ui| {
                 if ui
                     .button("Respawn")
@@ -566,25 +569,86 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> UiResponse {
 
             ui.separator();
 
-            ui.label("World size (units):");
             ui.horizontal(|ui| {
-                ui.add(
+                ui.label("World size:");
+                ui.checkbox(&mut sim.auto_density, "Auto-density")
+                    .on_hover_text(
+                        "Automatically scale the world so particle density stays roughly constant \
+                         as particle count changes.  Keeps GPU load roughly linear with \
+                         particle count instead of quadratic.",
+                    );
+            });
+            if sim.auto_density {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut sim.perf_auto, false, "Fixed density")
+                        .on_hover_text(
+                            "Scale world to maintain a fixed target density, applied on Respawn. \
+                             World size is computed from the density slider and current particle count.",
+                        );
+                    ui.radio_value(&mut sim.perf_auto, true, "Auto-performance")
+                        .on_hover_text(
+                            "Dynamically adjust world size every ~2 s to approach a target FPS. \
+                             No respawn needed — only r_max changes.",
+                        );
+                });
+                if sim.perf_auto {
+                    ui.add(
+                        egui::Slider::new(&mut sim.perf_target_fps, 15.0_f32..=240.0_f32)
+                            .text("Target FPS")
+                            .step_by(5.0),
+                    )
+                    .on_hover_text(
+                        "Target frame rate for the auto-performance controller.  The world size is \
+                         adjusted every ~2 s to approach this value without a respawn.  Higher target \
+                         → larger world, lower density; lower target → smaller world, higher density.",
+                    );
+                } else {
+                    let ref_area = 1280.0_f32 * 720.0_f32;
+                    let mut ref_count =
+                        (sim.density_target * ref_area).round().clamp(500.0, 2_000_000.0) as usize;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut ref_count, 500..=2_000_000)
+                                .text("Density equiv.")
+                                .logarithmic(true),
+                        )
+                        .on_hover_text(
+                            "Target density expressed as an equivalent particle count in a 1280×720 \
+                             world.  Lower = sparser (faster); higher = denser (richer physics).  \
+                             Applied on Respawn.",
+                        )
+                        .changed()
+                    {
+                        sim.density_target = ref_count as f32 / ref_area;
+                    }
+                }
+            }
+            ui.horizontal(|ui| {
+                let editable = !sim.auto_density;
+                ui.add_enabled(
+                    editable,
                     egui::DragValue::new(&mut sim.world_width)
                         .speed(10.0)
-                        .range(100.0..=10000.0)
+                        .range(100.0..=200_000.0)
                         .prefix("W: "),
                 )
-                .on_hover_text("World width in simulation units");
-                ui.add(
+                .on_hover_text(
+                    "World width in simulation units.  Larger worlds dilute particle \
+                     density, reducing the normalised interaction radius and GPU load.",
+                );
+                ui.add_enabled(
+                    editable,
                     egui::DragValue::new(&mut sim.world_height)
                         .speed(10.0)
-                        .range(100.0..=10000.0)
+                        .range(100.0..=200_000.0)
                         .prefix("H: "),
                 )
-                .on_hover_text("World height in simulation units");
+                .on_hover_text("World height in simulation units.  See world width.");
                 if ui
                     .button("Match Window")
-                    .on_hover_text("Resize the world to match the current window aspect ratio")
+                    .on_hover_text(
+                        "Set world size to match the current window dimensions and disable auto-density",
+                    )
                     .clicked()
                 {
                     resp.match_win = true;
@@ -599,7 +663,8 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> UiResponse {
                     .step_by(0.001),
             )
             .on_hover_text(
-                "Hard-core repulsion radius — particles closer than this always repel each other, regardless of species",
+                "Hard-core repulsion radius as a fraction of the reference world height (720 units). \
+                 Particles closer than this always repel, regardless of species.",
             );
             ui.add(
                 egui::Slider::new(&mut sim.r_max, 0.01_f32..=0.3_f32)
@@ -607,7 +672,9 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> UiResponse {
                     .step_by(0.005),
             )
             .on_hover_text(
-                "Maximum interaction distance — particles beyond this range are invisible to each other",
+                "Maximum interaction distance as a fraction of the reference world height (720 units). \
+                 At larger world sizes the effective GPU radius shrinks proportionally, \
+                 keeping neighbour count and performance constant.",
             );
             ui.add(
                 egui::Slider::new(&mut sim.friction, 0.0_f32..=5.0_f32)
@@ -909,6 +976,7 @@ pub fn draw_perf_overlay(
     quick_bench: &benchmark::QuickBench,
     runner: &mut benchmark::BenchmarkRunner,
     vsync: bool,
+    vsync_managed: bool,
     vsync_available: bool,
     per_species_count: &[usize],
 ) -> BenchmarkPanelResponse {
@@ -929,7 +997,7 @@ pub fn draw_perf_overlay(
     let min_dt: f32 = frame_times.iter().cloned().fold(f32::MAX, f32::min);
     let max_dt: f32 = frame_times.iter().cloned().fold(0.0_f32, f32::max);
 
-    let grid_w = ((2.0 / sim.r_max) as usize).max(5);
+    let grid_w = ((2.0 / sim.r_max_normalised()) as usize).max(5);
     let n_cells = grid_w * grid_w;
     let density = sim.particle_count as f32 / n_cells as f32;
 
@@ -974,6 +1042,60 @@ pub fn draw_perf_overlay(
                     );
                     ui.label(format!("{n_cells} cells  {density:.0} avg/cell"));
                     ui.end_row();
+
+                    let r_max_norm = sim.r_max_normalised();
+                    let est_neighbors = (sim.particle_count as f32
+                        * std::f32::consts::PI
+                        * r_max_norm
+                        * r_max_norm) as u32;
+
+                    ui.label("Density").on_hover_text(
+                        "Particles per pixel² of world area and estimated average neighbours \
+                         per particle.  Both stay constant when auto-density is on.",
+                    );
+                    ui.label(format!(
+                        "{:.4} p/px²  ~{est_neighbors} nbrs",
+                        sim.density()
+                    ));
+                    ui.end_row();
+
+                    ui.label("r_max (GPU)").on_hover_text(
+                        "Effective interaction radius sent to the GPU: r_max × 720 / world_height. \
+                         At the default world (height 720) this equals the slider value. \
+                         Shrinks as the world grows, keeping the physical reach constant.",
+                    );
+                    ui.label(format!("{r_max_norm:.4}"));
+                    ui.end_row();
+
+                    if sim.auto_density && sim.perf_auto {
+                        let avg_fps = 1.0 / avg_dt;
+                        let at_limit = sim.perf_at_limit();
+                        let on_target = avg_fps >= sim.perf_target_fps * 0.95;
+                        let (label, color, tip) = if at_limit && !on_target {
+                            (
+                                "GPU limited",
+                                egui::Color32::from_rgb(255, 160, 60),
+                                "The world is at the maximum size where physics still improve. \
+                                 The target FPS is unachievable at the current particle count — \
+                                 lower the target or reduce particles.",
+                            )
+                        } else if on_target {
+                            (
+                                "On target",
+                                egui::Color32::from_rgb(100, 220, 100),
+                                "Auto-performance has converged; FPS is within 5% of the target.",
+                            )
+                        } else {
+                            (
+                                "Converging",
+                                egui::Color32::from_rgb(120, 180, 255),
+                                "Auto-performance is adjusting world size every ~2 s toward the target FPS.",
+                            )
+                        };
+                        ui.label("Auto-perf");
+                        ui.colored_label(color, label).on_hover_text(tip);
+                        ui.end_row();
+                    }
                 });
 
             if !per_species_count.is_empty() {
@@ -997,7 +1119,14 @@ pub fn draw_perf_overlay(
             ui.separator();
 
             // Global vsync toggle (Quick Bench follows this setting)
-            if vsync_available {
+            if vsync_managed {
+                ui.add_enabled(false, egui::Checkbox::new(&mut false, "VSync (managed)"))
+                    .on_hover_text(
+                        "VSync is disabled while Auto-performance is active — the FPS controller \
+                         needs to see true GPU frame times, not the monitor refresh rate.  \
+                         Your preference will be restored when Auto-performance is turned off.",
+                    );
+            } else if vsync_available {
                 let mut vsync_val = vsync;
                 if ui
                     .checkbox(&mut vsync_val, "VSync")
@@ -1010,7 +1139,9 @@ pub fn draw_perf_overlay(
                 }
             } else {
                 ui.add_enabled(false, egui::Checkbox::new(&mut true, "VSync (unavailable)"))
-                    .on_hover_text("VSync toggle requires PresentMode::Immediate support from the adapter");
+                    .on_hover_text(
+                        "VSync toggle requires PresentMode::Immediate support from the adapter",
+                    );
             }
 
             ui.separator();
