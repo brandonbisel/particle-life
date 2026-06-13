@@ -110,6 +110,9 @@ struct AppState {
     quick_bench: benchmark::QuickBench,
     vsync: bool,
 
+    // Pending one-shot actions triggered by keyboard shortcuts
+    pending_screenshot: bool,
+
     // Mouse tracking
     cursor_px: PhysicalPosition<f64>,
     lmb_down: bool,
@@ -222,6 +225,7 @@ impl ApplicationHandler for AppHandler {
             spawn_species: None,
             spawn_rate: 50,
             cursor_px: PhysicalPosition::new(0.0, 0.0),
+            pending_screenshot: false,
             lmb_down: false,
             lmb_egui: false,
             lmb_panning: false,
@@ -432,6 +436,9 @@ impl ApplicationHandler for AppHandler {
                         Key::Named(NamedKey::ArrowDown) => {
                             state.camera.center[1] = (state.camera.center[1] - step).max(0.0);
                         }
+                        Key::Named(NamedKey::Space) => {
+                            state.sim.paused = !state.sim.paused;
+                        }
                         Key::Character(ref c) => {
                             let vp = window.inner_size();
                             let mid = PhysicalPosition::new(
@@ -463,6 +470,7 @@ impl ApplicationHandler for AppHandler {
                                 }
                                 "0" => state.camera = Camera::default_view(),
                                 "r" => state.sim.respawn(state.renderer.queue()),
+                                "s" => state.pending_screenshot = true,
                                 _ => {}
                             }
                         }
@@ -567,6 +575,7 @@ impl ApplicationHandler for AppHandler {
                 if should_reset_view {
                     state.camera = Camera::default_view();
                 }
+                let take_screenshot = take_screenshot || std::mem::take(&mut state.pending_screenshot);
                 if take_screenshot {
                     let dir = std::path::Path::new(config::SCREENSHOTS_DIR);
                     let _ = std::fs::create_dir_all(dir);

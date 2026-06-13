@@ -18,6 +18,7 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 - **Preset system** — save, load, and import/export TOML presets; four built-in presets included
 - **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
 - **Performance overlay:** FPS, frame time min/max/avg, grid stats, VSync toggle
+- **Screenshot capture** — toolbar button saves a PNG to `screenshots/` with a timestamp filename
 
 ## Gallery
 
@@ -101,6 +102,14 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | **Hold click** (Attract/Repel) | Pull/push particles toward cursor |
 | **Hold click** (Spawn) | Emit new particles at cursor |
 
+### Toolbar
+
+| Button | Effect |
+|--------|--------|
+| Pan / Zoom +/− / Attract / Repel / Spawn | Switch active tool |
+| Reset View | Fit world to window |
+| Camera icon | Save a PNG screenshot to `screenshots/` |
+
 ### Keyboard
 
 | Key | Effect |
@@ -108,8 +117,10 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `Arrow keys` | Pan |
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
+| `Space` | Pause / resume simulation |
 | `0` | Reset view |
 | `R` | Respawn particles |
+| `S` | Save screenshot to `screenshots/` |
 | `F11` | Toggle fullscreen |
 | `Escape` | Quit |
 
