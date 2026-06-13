@@ -46,6 +46,10 @@ pub struct BenchmarkPanelResponse {
     pub start_capacity: bool,
     /// Export capacity results to CSV.
     pub export_capacity_csv: bool,
+    /// Cancel the running suite benchmark.
+    pub cancel: bool,
+    /// Cancel the running capacity benchmark.
+    pub cancel_capacity: bool,
     /// `Some(v)` when the user toggled the global vsync checkbox.
     pub vsync: Option<bool>,
 }
@@ -70,6 +74,7 @@ pub fn draw_toolbar(
     ctx: &egui::Context,
     tool: &mut Tool,
     gallery_open: bool,
+    bench_running: bool,
 ) -> (bool, bool, bool, egui::Rect) {
     // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
     let response = egui::Area::new(egui::Id::new("toolbar"))
@@ -120,8 +125,8 @@ pub fn draw_toolbar(
                     }
 
                     let r = ui
-                        .add_sized(
-                            icon_sz,
+                        .add_enabled(
+                            !bench_running,
                             egui::SelectableLabel::new(*tool == Tool::Attract, ph::MAGNET),
                         )
                         .on_hover_text("Attract — hold to pull nearby particles toward the cursor");
@@ -130,8 +135,8 @@ pub fn draw_toolbar(
                     }
 
                     let r = ui
-                        .add_sized(
-                            icon_sz,
+                        .add_enabled(
+                            !bench_running,
                             egui::SelectableLabel::new(
                                 *tool == Tool::Repel,
                                 ph::ARROWS_OUT_CARDINAL,
@@ -145,8 +150,8 @@ pub fn draw_toolbar(
                     }
 
                     let r = ui
-                        .add_sized(
-                            icon_sz,
+                        .add_enabled(
+                            !bench_running,
                             egui::SelectableLabel::new(*tool == Tool::Spawn, ph::SPARKLE),
                         )
                         .on_hover_text("Spawn — hold to emit new particles at the cursor");
@@ -173,8 +178,8 @@ pub fn draw_toolbar(
                     }
 
                     if ui
-                        .add_sized(
-                            icon_sz,
+                        .add_enabled(
+                            !bench_running,
                             egui::SelectableLabel::new(gallery_open, ph::IMAGES),
                         )
                         .on_hover_text("Preset Gallery — browse presets visually")
@@ -526,12 +531,19 @@ fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
 }
 
 /// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border.
-pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState) -> UiResponse {
+pub fn draw_ui(
+    ctx: &egui::Context,
+    sim: &mut SimulationState,
+    bench_running: bool,
+) -> UiResponse {
     let mut resp = UiResponse::default();
 
     egui::Window::new("Particle Life")
         .anchor(egui::Align2::LEFT_TOP, [10.0, 10.0])
         .show(ctx, |ui| {
+            if bench_running {
+                ui.disable();
+            }
             ui.add(
                 egui::Slider::new(&mut sim.particle_count, 100..=2_000_000)
                     .text("Particles")
@@ -991,6 +1003,8 @@ pub fn draw_perf_overlay(
         start_quick: false,
         start_capacity: false,
         export_capacity_csv: false,
+        cancel: false,
+        cancel_capacity: false,
         vsync: None,
     };
 
@@ -1211,18 +1225,44 @@ pub fn draw_perf_overlay(
                         runner.vsync_off = !suite_vsync;
                     }
 
+                    ui.label(
+                        "Runs every preset × particle-count combination at fixed 1280×720 \
+                         (5s warmup + 15s collection each). ~5 minutes for 16 combos.",
+                    );
+                    ui.add_space(4.0);
+
                     if runner.is_running() {
                         if let Some((done, total, elapsed, target, is_warmup)) = runner.progress() {
                             let phase = if is_warmup { "Warmup" } else { "Collecting" };
+                            let preset_name = crate::config::builtin_presets()
+                                [benchmark::BenchmarkRunner::combo_preset_idx(done)]
+                                .name
+                                .clone();
+                            let particles = benchmark::BENCHMARK_TIERS
+                                [benchmark::BenchmarkRunner::combo_tier_idx(done)]
+                                .particles;
                             ui.label(format!(
-                                "Combo {}/{} — {} ({:.0}/{:.0}s)",
+                                "Combo {}/{} — {} — {}",
                                 done + 1,
                                 total,
-                                phase,
-                                elapsed,
-                                target
+                                preset_name,
+                                fmt_particles(particles),
                             ));
+                            ui.label(format!("{phase} ({:.1}/{:.0}s)", elapsed, target));
                             ui.add(egui::ProgressBar::new(elapsed / target).show_percentage());
+                            ui.add_space(2.0);
+                            let overall =
+                                (done as f32 + (elapsed / target).min(1.0)) / total as f32;
+                            ui.label(format!("Overall: combo {}/{}", done + 1, total));
+                            ui.add(egui::ProgressBar::new(overall).show_percentage());
+                        }
+                        ui.add_space(2.0);
+                        if ui
+                            .button("Cancel")
+                            .on_hover_text("Stop the suite and discard partial results")
+                            .clicked()
+                        {
+                            resp.cancel = true;
                         }
                     } else if runner.is_done() {
                         ui.label(format!("{} results ready", runner.results.len()));
@@ -1234,11 +1274,6 @@ pub fn draw_perf_overlay(
                             resp.export_csv = true;
                         }
                     } else {
-                        ui.label(format!(
-                            "{} combos (4 presets × {} tiers)",
-                            benchmark::BenchmarkRunner::num_combos(),
-                            benchmark::BENCHMARK_TIERS.len(),
-                        ));
                         if ui
                             .button("Start Suite")
                             .on_hover_text(
@@ -1254,7 +1289,8 @@ pub fn draw_perf_overlay(
             ui.separator();
 
             // Capacity benchmark: binary search for max particles at target FPS
-            let any_bench_running = runner.is_running() || quick_bench.is_running();
+            let any_bench_running =
+                runner.is_running() || quick_bench.is_running() || capacity.is_running();
             egui::CollapsingHeader::new("Capacity Benchmark")
                 .default_open(false)
                 .show(ui, |ui| {
@@ -1282,6 +1318,22 @@ pub fn draw_perf_overlay(
                                 egui::ProgressBar::new(p.elapsed / p.target_secs)
                                     .show_percentage(),
                             );
+                            ui.add_space(2.0);
+                            let step_frac = (p.elapsed / p.target_secs).min(1.0);
+                            let overall = (p.preset_idx as f32 * p.max_iters as f32
+                                + p.iter as f32
+                                + step_frac)
+                                / (p.total_presets as f32 * p.max_iters as f32);
+                            ui.label(format!("Overall: preset {}/{}", p.preset_idx + 1, p.total_presets));
+                            ui.add(egui::ProgressBar::new(overall).show_percentage());
+                        }
+                        ui.add_space(2.0);
+                        if ui
+                            .button("Cancel")
+                            .on_hover_text("Stop the search and discard partial results")
+                            .clicked()
+                        {
+                            resp.cancel_capacity = true;
                         }
                     } else if capacity.is_done() && !capacity.results.is_empty() {
                         ui.label(format!("Results — target {:.0} fps:", capacity.target_fps));

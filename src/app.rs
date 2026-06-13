@@ -572,6 +572,9 @@ impl ApplicationHandler for AppHandler {
                 let shader_zoom = state.camera.zoom_factor * state.fit_zoom;
                 let world_aspect = state.sim.world_aspect();
 
+                let bench_running =
+                    state.benchmark.is_running() || state.capacity_bench.is_running();
+
                 let (full_output, ui_resp, bench_resp, should_reset_view, take_screenshot) = {
                     let egui_ctx = &state.egui_ctx;
                     let sim = &mut state.sim;
@@ -601,12 +604,14 @@ impl ApplicationHandler for AppHandler {
                         start_quick: false,
                         start_capacity: false,
                         export_capacity_csv: false,
+                        cancel: false,
+                        cancel_capacity: false,
                         vsync: None,
                     };
                     let mut reset_view = false;
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r = ui::draw_ui(ctx, sim);
+                        ui_r = ui::draw_ui(ctx, sim, bench_running);
                         bench_r = ui::draw_perf_overlay(
                             ctx,
                             frame_times,
@@ -619,13 +624,15 @@ impl ApplicationHandler for AppHandler {
                             vsync_available,
                             per_species_count,
                         );
-                        let (rv, ss, tg, toolbar_rect) = ui::draw_toolbar(ctx, tool, *gallery_open);
+                        let (rv, ss, tg, toolbar_rect) =
+                            ui::draw_toolbar(ctx, tool, *gallery_open, bench_running);
                         reset_view = rv;
                         take_screenshot = ss;
                         if tg {
                             *gallery_open = !*gallery_open;
                         }
                         if *gallery_open
+                            && !bench_running
                             && ui::draw_gallery(
                                 ctx,
                                 preset_library,
@@ -888,6 +895,16 @@ impl ApplicationHandler for AppHandler {
                     Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
                 }
 
+                // Cancel benchmark runs
+                if bench_resp.cancel {
+                    state.benchmark.cancel();
+                    state.renderer.set_vsync(state.vsync);
+                }
+                if bench_resp.cancel_capacity {
+                    state.capacity_bench.cancel();
+                    state.renderer.set_vsync(state.vsync);
+                }
+
                 // Apply active tool effects to sim mouse state before dispatch.
                 let vp = window.inner_size();
                 let world = screen_to_world(
@@ -900,7 +917,7 @@ impl ApplicationHandler for AppHandler {
                 state.sim.mouse_x = world[0];
                 state.sim.mouse_y = world[1];
                 state.sim.mouse_range = state.tool_range;
-                let sim_lmb = state.lmb_down && !state.lmb_egui;
+                let sim_lmb = state.lmb_down && !state.lmb_egui && !bench_running;
                 state.sim.mouse_strength = match state.tool {
                     ui::Tool::Attract if sim_lmb => state.mouse_strength,
                     ui::Tool::Repel if sim_lmb => -state.mouse_strength,

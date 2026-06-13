@@ -302,6 +302,11 @@ impl BenchmarkRunner {
         matches!(self.state, State::Done)
     }
 
+    /// Abort a running suite and return to idle, discarding partial results.
+    pub fn cancel(&mut self) {
+        self.state = State::Idle;
+    }
+
     /// Returns `(completed_combos, total_combos, elapsed_secs, target_secs, is_warmup)`
     /// while running; `None` when idle or done.
     pub fn progress(&self) -> Option<(usize, usize, f32, f32, bool)> {
@@ -573,6 +578,11 @@ impl CapacityBench {
             self.state,
             CapState::Warmup { .. } | CapState::Collect { .. }
         )
+    }
+
+    /// Abort a running search and return to idle, discarding partial results.
+    pub fn cancel(&mut self) {
+        self.state = CapState::Idle;
     }
 
     pub fn is_done(&self) -> bool {
