@@ -159,6 +159,10 @@ src/
 | Max particles | 500,000 | Hard GPU buffer limit |
 | Max species | 8 | Attraction matrix dimension |
 
+## AI Assistance
+
+This project was developed with the help of [Claude Code](https://claude.ai/code) (Anthropic). AI assistance was used throughout: architecture decisions, GPU pipeline implementation, UI, benchmarking, documentation, and code review.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
