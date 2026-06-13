@@ -831,10 +831,10 @@ pub fn draw_perf_overlay(
             ui.separator();
 
             // Quick bench
-            if let Some((frame, total, is_warmup)) = quick_bench.progress() {
+            if let Some((elapsed, total, is_warmup)) = quick_bench.progress() {
                 let phase = if is_warmup { "Warmup" } else { "Collecting" };
                 ui.label(format!("{phase}…"));
-                ui.add(egui::ProgressBar::new(frame as f32 / total as f32).show_percentage());
+                ui.add(egui::ProgressBar::new(elapsed / total).show_percentage());
             } else if let Some((avg, min, max, particles)) = quick_bench.result() {
                 ui.label(format!("Quick bench — {} particles", particles));
                 egui::Grid::new("qbench_grid")
@@ -861,7 +861,7 @@ pub fn draw_perf_overlay(
             } else if ui
                 .button("Quick Bench")
                 .on_hover_text(
-                    "Measure average FPS at the current particle count (short warmup + collection run)",
+                    "Measure average FPS at the current particle count (5s warmup + 15s collection)",
                 )
                 .clicked()
             {

@@ -19,11 +19,11 @@ const GLOBAL_CAP_SECS: f64 = 360.0; // 16 combos × 20s each + margin
 
 // ── Quick (ad-hoc) benchmark ──────────────────────────────────────────────────
 
-const QUICK_WARMUP: u32 = 120; // frames before collection starts
-const QUICK_FRAMES: usize = 240; // frames to collect
+const QUICK_WARMUP_SECS: f64 = 5.0;
+const QUICK_COLLECT_SECS: f64 = 15.0;
 
-/// Ad-hoc single-point benchmark: warms up for [`QUICK_WARMUP`] frames then
-/// collects FPS samples for [`QUICK_FRAMES`] frames at the current particle count.
+/// Ad-hoc single-point benchmark: warms up for [`QUICK_WARMUP_SECS`] seconds then
+/// collects FPS samples for [`QUICK_COLLECT_SECS`] seconds at the current particle count.
 pub struct QuickBench {
     state: QuickBenchState,
 }
@@ -31,11 +31,12 @@ pub struct QuickBench {
 enum QuickBenchState {
     Idle,
     Warmup {
-        frame: u32,
+        start: Instant,
     },
     Collecting {
         fps: Vec<f32>,
         particles: u32,
+        start: Instant,
     },
     Done {
         avg: f32,
@@ -54,8 +55,10 @@ impl QuickBench {
 
     /// Begin a new quick-bench run at the current GPU particle count.
     pub fn start(&mut self, particles: u32) {
-        self.state = QuickBenchState::Warmup { frame: 0 };
         let _ = particles; // stored when we enter Collecting
+        self.state = QuickBenchState::Warmup {
+            start: Instant::now(),
+        };
     }
 
     /// Returns `true` while warmup or sample collection is in progress.
@@ -70,22 +73,27 @@ impl QuickBench {
     pub fn advance(&mut self, dt: f32, particles: u32) -> bool {
         let old = std::mem::replace(&mut self.state, QuickBenchState::Idle);
         match old {
-            QuickBenchState::Warmup { frame } => {
-                if frame + 1 >= QUICK_WARMUP {
+            QuickBenchState::Warmup { start } => {
+                if start.elapsed().as_secs_f64() >= QUICK_WARMUP_SECS {
                     self.state = QuickBenchState::Collecting {
                         fps: vec![],
                         particles,
+                        start: Instant::now(),
                     };
                 } else {
-                    self.state = QuickBenchState::Warmup { frame: frame + 1 };
+                    self.state = QuickBenchState::Warmup { start };
                 }
                 false
             }
-            QuickBenchState::Collecting { mut fps, particles } => {
+            QuickBenchState::Collecting {
+                mut fps,
+                particles,
+                start,
+            } => {
                 if dt > 1e-6 {
                     fps.push(1.0 / dt);
                 }
-                if fps.len() >= QUICK_FRAMES {
+                if start.elapsed().as_secs_f64() >= QUICK_COLLECT_SECS {
                     let n = fps.len().max(1);
                     let avg = fps.iter().sum::<f32>() / n as f32;
                     let min = fps.iter().cloned().fold(f32::MAX, f32::min);
@@ -98,7 +106,7 @@ impl QuickBench {
                     };
                     return true;
                 }
-                self.state = QuickBenchState::Collecting { fps, particles };
+                self.state = QuickBenchState::Collecting { fps, particles, start };
                 false
             }
             other => {
@@ -108,13 +116,19 @@ impl QuickBench {
         }
     }
 
-    /// Progress (current_frame, total_frames, is_warmup).  None when idle/done.
-    pub fn progress(&self) -> Option<(u32, u32, bool)> {
+    /// Progress `(elapsed_secs, total_secs, is_warmup)`.  `None` when idle/done.
+    pub fn progress(&self) -> Option<(f32, f32, bool)> {
         match &self.state {
-            QuickBenchState::Warmup { frame } => Some((*frame, QUICK_WARMUP, true)),
-            QuickBenchState::Collecting { fps, .. } => {
-                Some((fps.len() as u32, QUICK_FRAMES as u32, false))
-            }
+            QuickBenchState::Warmup { start } => Some((
+                start.elapsed().as_secs_f32(),
+                QUICK_WARMUP_SECS as f32,
+                true,
+            )),
+            QuickBenchState::Collecting { start, .. } => Some((
+                start.elapsed().as_secs_f32(),
+                QUICK_COLLECT_SECS as f32,
+                false,
+            )),
             _ => None,
         }
     }
