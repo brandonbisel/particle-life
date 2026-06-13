@@ -26,4 +26,4 @@ jobs:
           path-to-document: >-
             https://github.com/brandonbisel/particle-life/blob/main/CONTRIBUTORS.md
           branch: cla-signatures
-          allowlist: brandonbisel,bot*
+          allowlist: brandonbisel,bot*,noreply@anthropic.com
