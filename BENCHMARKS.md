@@ -2,6 +2,8 @@
 
 Results recorded with the built-in Suite Benchmark (vsync off, 5s warmup + 15s collection per combo).
 
+**Measurement note:** FPS figures are the arithmetic mean of per-frame `1/dt` samples collected inside the benchmark window. Before the fps-counter fix (commit `9f2be06`+), a `dt.min(0.05)` physics cap was incorrectly applied to the timing ring buffer, clamping any frame slower than 20 fps to exactly 20 fps. The Linux results below use the corrected measurement. The Mac Mini results predate the fix — any row with `Min FPS = 20` is likely affected, and Ecosystem/Symbiosis at high particle counts should be treated as lower bounds.
+
 ## Presets
 
 | Preset | Species | Matrix pattern | Behaviour |
@@ -33,41 +35,61 @@ Average FPS by preset and particle count (vsync off):
 
 | Preset    |   10K |   50K | 100K | 500K |
 |-----------|------:|------:|-----:|-----:|
-| Clusters  | 4,712 | 1,530 |  660 |   47 |
-| Chains    | 4,795 | 1,841 |  694 |   46 |
-| Ecosystem | 2,732 |   733 |  386 |   30 |
-| Symbiosis | 2,761 |   756 |  305 |   26 |
+| Clusters  | 4,030 | 1,414 |  599 |   44 |
+| Chains    | 4,829 | 1,803 |  671 |   44 |
+| Ecosystem | 2,283 |   615 |  357 |    9 |
+| Symbiosis | 2,835 |   737 |  352 |   27 |
 
 **Performance tiers:**
 
-- **Clusters and Chains** keep particles distributed across the spatial grid, so cell load stays balanced. At ≤ 100K this is CPU/submission-bound — the GPU has far more headroom. 500K is the meaningful GPU-bound number (~21 ms/frame).
-- **Ecosystem and Symbiosis** cause particles to aggregate into dense blobs, creating spatial grid hotspots where individual cells have many more neighbors to evaluate. This produces ~1.6–1.8× lower throughput than the spreading presets even at the same particle count. These presets are GPU-bound as low as 50K.
+- **Clusters and Chains** keep particles distributed across the spatial grid, so cell load stays balanced. At ≤ 100K this is CPU/submission-bound — the GPU has far more headroom. 500K is the meaningful GPU-bound number (~23 ms/frame, ~44 fps).
+- **Symbiosis** causes particles to aggregate into large mixed blobs, creating moderate grid hotspots. ~1.5–2× lower throughput than Clusters/Chains; GPU-bound from ~50K.
+- **Ecosystem** produces the most extreme spatial non-uniformity: the tight fleeing cluster (species 3–5) concentrates hundreds of thousands of particles into a handful of grid cells. At 500K the 12×12 spatial grid has ~3,500 particles per cell on average, but the cluster region drives individual cells far higher, causing the neighbor-search to degrade toward O(n²) locally. This makes Ecosystem **~5× slower** than Clusters/Chains at 500K (9 fps vs. 44 fps), with high frame-time variance (5–16 fps) as the cluster forms, compresses, and scatters. GPU-bound from ~10K.
 - The 500K tier is GPU-bound for all presets and is the most useful cross-preset comparison.
 
 ### Per-run detail
 
 | Preset    | Particles | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
 |-----------|----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
-| Clusters  |    10,000 |   4,712 |     317 |   5,553 |   0.21 | 69,073 |      15.0 | off   |
-| Clusters  |    50,000 |   1,530 |     561 |   2,384 |   0.65 | 22,651 |      15.0 | off   |
-| Clusters  |   100,000 |     660 |     335 |     999 |   1.52 |  9,737 |      15.0 | off   |
-| Clusters  |   500,000 |      47 |      42 |      49 |  21.43 |    700 |      15.0 | off   |
-| Chains    |    10,000 |   4,795 |     298 |   5,633 |   0.21 | 70,274 |      15.0 | off   |
-| Chains    |    50,000 |   1,841 |     626 |   3,147 |   0.54 | 27,289 |      15.0 | off   |
-| Chains    |   100,000 |     694 |     250 |   2,612 |   1.44 | 10,220 |      15.0 | off   |
-| Chains    |   500,000 |      46 |      43 |      48 |  21.59 |    695 |      15.0 | off   |
-| Ecosystem |    10,000 |   2,732 |     286 |   5,378 |   0.37 | 38,863 |      15.0 | off   |
-| Ecosystem |    50,000 |     733 |     261 |   3,221 |   1.36 |  9,871 |      15.0 | off   |
-| Ecosystem |   100,000 |     386 |     201 |     656 |   2.59 |  5,379 |      15.0 | off   |
-| Ecosystem |   500,000 |      30 |      20 |      42 |  33.95 |    282 |      15.1 | off   |
-| Symbiosis |    10,000 |   2,761 |     285 |   5,441 |   0.36 | 40,453 |      15.0 | off   |
-| Symbiosis |    50,000 |     756 |     341 |   1,228 |   1.32 | 10,921 |      15.0 | off   |
-| Symbiosis |   100,000 |     305 |     178 |     403 |   3.27 |  4,537 |      15.0 | off   |
-| Symbiosis |   500,000 |      26 |      21 |      29 |  39.21 |    381 |      15.0 | off   |
+| Clusters  |    10,000 |   4,030 |     294 |   5,073 |   0.25 | 59,921 |      15.0 | off   |
+| Clusters  |    50,000 |   1,414 |     283 |   2,250 |   0.71 | 21,102 |      15.0 | off   |
+| Clusters  |   100,000 |     599 |     126 |   2,852 |   1.67 |  8,918 |      15.0 | off   |
+| Clusters  |   500,000 |      44 |      39 |      47 |  22.98 |    653 |      15.0 | off   |
+| Chains    |    10,000 |   4,829 |     298 |   5,255 |   0.21 | 71,704 |      15.0 | off   |
+| Chains    |    50,000 |   1,803 |      94 |   4,919 |   0.55 | 26,846 |      15.0 | off   |
+| Chains    |   100,000 |     671 |     472 |     917 |   1.49 |  9,937 |      15.0 | off   |
+| Chains    |   500,000 |      44 |      43 |      46 |  22.69 |    661 |      15.0 | off   |
+| Ecosystem |    10,000 |   2,283 |     294 |   4,895 |   0.44 | 32,830 |      15.0 | off   |
+| Ecosystem |    50,000 |     615 |     269 |   1,205 |   1.63 |  8,339 |      15.0 | off   |
+| Ecosystem |   100,000 |     357 |     167 |     588 |   2.80 |  4,844 |      15.0 | off   |
+| Ecosystem |   500,000 |       9 |       5 |      16 | 114.73 |    116 |      15.1 | off   |
+| Symbiosis |    10,000 |   2,835 |     505 |   5,049 |   0.35 | 41,945 |      15.0 | off   |
+| Symbiosis |    50,000 |     737 |     480 |   1,129 |   1.36 | 10,759 |      15.0 | off   |
+| Symbiosis |   100,000 |     352 |     223 |     450 |   2.84 |  5,208 |      15.0 | off   |
+| Symbiosis |   500,000 |      27 |      22 |      30 |  37.41 |    401 |      15.0 | off   |
+
+---
+
+## Linux — Capacity Benchmark (AMD Radeon RX 9070 XT)
+
+Maximum particle count at 30 fps (1280×720, vsync off, `auto_density = false`):
+
+| Preset    | Max Particles | Achieved FPS |
+|-----------|--------------:|-------------:|
+| Clusters  |       614,000 |         30.8 |
+| Chains    |       607,000 |         30.6 |
+| Ecosystem |       448,000 |         32.9 |
+| Symbiosis |       433,000 |         30.7 |
+
+Results match the performance tier ordering from the suite: Clusters and Chains have near-identical capacity (~610K); Symbiosis is ~30% lower due to grid hotspots from mixed-species blobs; Ecosystem is ~27% lower than Symbiosis due to its extreme tight-cluster hotspot.
+
+**Method:** binary search with log-linear interpolation (regula falsi in log-log space) to bias test points toward the predicted fps crossover. Adaptive warmup: transitions to collect only once two consecutive 2-second fps windows agree within 12%, with a 5s minimum and 20s hard cap. Ecosystem uses the full cliff-detection path — warmup holds until fps drops below 80% of its peak (cluster settled). 5s collect per iteration, 10% convergence window (hi/lo ≤ 1.10).
 
 ---
 
 ## macOS — Mac Mini (M4)
+
+> **Caveat:** These results were recorded before the fps-counter fix. The `dt.min(0.05)` cap was applied to fps samples, so any frame taking longer than 50 ms was reported as exactly 20 fps rather than its true rate. Rows with `Min FPS = 20` are affected; the true minimum (and in some cases the true average) will be lower. A corrected re-run is pending.
 
 ### Hardware
 

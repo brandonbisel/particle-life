@@ -1,20 +1,38 @@
 # Particle Life
 
-A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written in Rust. Up to 500,000 particles interact via emergent attraction/repulsion rules, running entirely on the GPU at real-time frame rates.
+A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written in Rust. Up to 2,000,000 particles interact via emergent attraction/repulsion rules, running entirely on the GPU at real-time frame rates.
 
 ![Particle Life](https://img.shields.io/badge/language-Rust-orange) ![GPU](https://img.shields.io/badge/GPU-wgpu%2024-blue) ![UI](https://img.shields.io/badge/UI-egui%200.31-green) ![License](https://img.shields.io/badge/license-MIT-brightgreen) ![CI](https://github.com/brandonbisel/particle-life/actions/workflows/ci.yml/badge.svg?branch=dev)
+
+![Particle Life simulation](assets/images/hero.gif)
 
 ## Features
 
 - **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
-- **500K particles** at 26–47 fps (preset-dependent; see [Benchmarks](BENCHMARKS.md))
+- **500K particles** at 9–44 fps at fixed world size depending on particle distribution (Clusters/Chains 44 fps; Ecosystem 9 fps due to spatial-grid hotspots from a tight cluster); comparable frame rates at 2M with auto-density
 - **8 species** with a fully editable N×N attraction matrix
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
-- **Configurable world size** — independent of window size; zoom/pan always shows the full world at fit
-- **Preset system** — save, load, and import/export TOML presets; four built-in presets included
-- **Real-time controls:** particle count, species, physics params, matrix randomization
-- **Performance overlay:** FPS, frame time min/max/avg, grid stats
+- **Physical world size** — scales the simulation domain; auto-density mode keeps GPU load linear with particle count by growing the world as particles increase
+- **Configurable palette** — five built-in themes (Default, Vivid, Neon, Pastel, Dark), per-species color pickers, and randomize
+- **Preset system** — save, load, and import/export TOML presets; four built-in presets included; presets auto-scale to your window on load
+- **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
+- **Performance overlay:** FPS, frame time min/max/avg, grid stats, density and neighbour estimate, VSync toggle
+- **Capacity benchmark** — binary-search mode finds the maximum sustainable particle count at a configurable target FPS; results exportable as CSV
+- **Screenshot capture** — toolbar button saves a PNG to `screenshots/` with a timestamp filename
+
+## Gallery
+
+<table>
+  <tr>
+    <td align="center"><img src="assets/images/preset-clusters.png" width="420"/><br><b>Clusters</b> — like attracts like</td>
+    <td align="center"><img src="assets/images/preset-chains.png" width="420"/><br><b>Chains</b> — predator-prey spirals</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="assets/images/preset-ecosystem.png" width="420"/><br><b>Ecosystem</b> — chain hunts a cluster</td>
+    <td align="center"><img src="assets/images/preset-symbiosis.png" width="420"/><br><b>Symbiosis</b> — cross-species mixing</td>
+  </tr>
+</table>
 
 ## How It Works
 
@@ -41,7 +59,7 @@ All physics runs on the GPU via [wgpu](https://github.com/gfx-rs/wgpu) compute s
 
 The reorder pass is critical: it converts random pointer-chasing in the force loop into sequential memory reads, recovering near-brute-force GPU cache throughput at large N.
 
-**Grid parameters:** cell size = `r_max / 2`, so `grid_w = max(5, floor(2 / r_max))`. At default `r_max = 0.08`: 25×25 = 625 cells, ~80 particles/cell at 50K.
+**Grid parameters:** cell size = `r_max_norm / 2`, so `grid_w = max(5, floor(2 / r_max_norm))`. The effective `r_max_norm = r_max × 720 / world_height` shrinks as the world grows, producing a finer grid with fewer neighbours per particle. At default settings (r_max=0.08, world_height=720): 25×25 = 625 cells, ~80 particles/cell at 50K. At 500K with auto-density: ~250×250 = 62,500 cells, ~8 particles/cell — same GPU cost per particle.
 
 ### Rendering
 
@@ -71,6 +89,8 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `pollster`                           | 0.3     | Block on async wgpu initialization           |
 | `serde` + `toml`                     | 1 / 0.8 | Preset serialisation                         |
 | `rfd`                                | 0.15    | Native file dialogs for import/export        |
+| `png`                                | 0.17    | PNG encoding for screenshots and thumbnails  |
+| `log` + `env_logger`                 | 0.4 / 0.11 | Structured logging (adapter selection, warnings) |
 
 ## Controls
 
@@ -85,6 +105,14 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | **Hold click** (Attract/Repel) | Pull/push particles toward cursor |
 | **Hold click** (Spawn) | Emit new particles at cursor |
 
+### Toolbar
+
+| Button | Effect |
+|--------|--------|
+| Pan / Zoom +/− / Attract / Repel / Spawn | Switch active tool |
+| Reset View | Fit world to window |
+| Camera icon | Save a PNG screenshot to `screenshots/` |
+
 ### Keyboard
 
 | Key | Effect |
@@ -92,7 +120,10 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `Arrow keys` | Pan |
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
+| `Space` | Pause / resume simulation |
 | `0` | Reset view |
+| `R` | Respawn particles |
+| `S` | Save screenshot to `screenshots/` |
 | `F11` | Toggle fullscreen |
 | `Escape` | Quit |
 
@@ -104,7 +135,7 @@ src/
   app.rs               — ApplicationHandler; owns window, renderer, sim, egui state, camera
   renderer.rs          — wgpu device/surface/pipeline; render() drives one frame
   simulation.rs        — SimulationState; GPU buffers, 5-pass dispatch, spawn, preset apply
-  benchmark.rs         — QuickBench (ad-hoc) and BenchmarkRunner (full suite + CSV export)
+  benchmark.rs         — QuickBench (ad-hoc), BenchmarkRunner (full suite + CSV export), CapacityBench (max-particle binary search at target FPS)
   config.rs            — Preset struct, built-in presets, TOML save/load, session persistence
   ui.rs                — egui panels: toolbar, params, attraction matrix, perf overlay
   shaders/
@@ -120,14 +151,24 @@ src/
 
 | Parameter | Value | Description |
 |-----------|-------|-------------|
-| `r_min` | 0.025 | Hard-core repulsion radius |
-| `r_max` | 0.08 | Interaction cutoff |
+| `r_min` | 0.025 | Hard-core repulsion radius (fraction of reference world height 720) |
+| `r_max` | 0.08 | Interaction cutoff (fraction of reference world height 720); effective GPU radius scales with world size |
 | `friction` | 0.5 | Velocity half-life ~1.4s |
 | `force_scale` | 0.007 | Global force multiplier |
-| `particle_radius` | 1.5 px | Rendered size |
-| `world_width/height` | 1280 × 720 | Simulation world dimensions (units) |
-| Max particles | 500,000 | Hard GPU buffer limit |
+| `particle_radius` | 1.5 | Rendered size in world units |
+| `world_width/height` | 1280 × 720 | Simulation world dimensions; affects interaction density |
+| Max particles | 2,000,000 | Hard GPU buffer limit (~90 MB VRAM) |
 | Max species | 8 | Attraction matrix dimension |
+
+## AI Assistance
+
+This project was developed with the help of [Claude Code](https://claude.ai/code) (Anthropic). AI assistance was used throughout: architecture decisions, GPU pipeline implementation, UI, benchmarking, documentation, and code review.
+
+## Contributing
+
+Contributions are welcome! Before your first pull request, please read the
+[Contributor License Agreement](CONTRIBUTORS.md). The CLA Assistant bot will
+prompt you to sign when you open a PR.
 
 ## License
 

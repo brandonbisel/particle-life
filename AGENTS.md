@@ -10,7 +10,7 @@ cargo run --release
 cargo check             # fast type/borrow check without linking
 ```
 
-No tests exist yet. `cargo check` is the fastest way to verify changes compile.
+Unit tests live in `config.rs` (preset invariants, TOML round-trip) and `simulation.rs` (struct sizes, field offsets). They are headless and require no GPU. `cargo check` is the fastest compile-only verification; `cargo test` runs the full suite.
 
 ## Branching Strategy
 
@@ -63,7 +63,7 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 | `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
 | `simulation.rs` | `SimulationState`; GPU buffers, 5-pass compute dispatch, preset apply, spawn |
 | `config.rs` | `Preset` struct, four built-in presets, TOML I/O, session persistence |
-| `benchmark.rs` | `QuickBench` (ad-hoc) and `BenchmarkRunner` (full suite + CSV export) |
+| `benchmark.rs` | `QuickBench` (ad-hoc), `BenchmarkRunner` (full suite + CSV export), `CapacityBench` (binary-search max-particle finder at target FPS) |
 | `ui.rs` | All egui draw functions; returns response structs — no app state owned here |
 
 ### Data Flow Per Frame
@@ -97,9 +97,10 @@ The reorder pass is performance-critical. Without it, the force pass does random
 
 ### Spatial Grid
 
-- Cell size = `r_max / 2`, so `grid_w = max(5, floor(2 / r_max))`
-- `MAX_GRID_CELLS = 40,000` (supports r_max as small as 0.01 → 200×200)
+- Cell size = `r_max_norm / 2`, so `grid_w = max(5, floor(2 / r_max_norm))`
+- `MAX_GRID_CELLS = 300,000` (supports r_max_norm as small as ≈0.00365 → ~547×547)
 - Cell index = `y * grid_w + x`, both axes wrapped modulo grid_w
+- `r_max_norm` is the value actually sent to the GPU — see **World Size** below for how it is derived from the stored `r_max` and `world_height`
 
 ### Key Structs
 
@@ -159,11 +160,26 @@ ndc = (pos - camera_center) * (shader_zoom * 2.0)
 - **Cursor**: `PhysicalPosition<f64>` from winit, y increases downward — `screen_to_world()` in `app.rs` handles the flip
 - **Camera**: `center` is the world point at screen center; panning is clamped so the world border never passes the viewport center
 
-## World Size
+## World Size and Density Scaling
 
-`SimulationState` stores `world_width: f32` and `world_height: f32` (in simulation units, default 1280×720). The simulation always runs in normalised `[0,1]²` coordinates; `world_width/world_height` is used purely as an aspect ratio (`world_aspect()`) passed to the shader.
+`SimulationState` stores `world_width: f32` and `world_height: f32` (simulation units, default 1280×720). The simulation always runs in normalised `[0,1]²` coordinates. World dimensions affect physics in two ways:
 
-`fit_zoom` in `app.rs` is derived from these dimensions so the world fills the viewport at default zoom regardless of the world's aspect ratio.
+1. **Aspect ratio** — `world_aspect() = world_width / world_height` is passed as `SimParams.aspect` and used in the shader to make inter-particle distances isotropic on screen.
+
+2. **Interaction radius scaling** — `r_max` and `r_min` in presets are stored as fractions of `BASE_WORLD_HEIGHT = 720.0`. The normalised values actually sent to the GPU are:
+   ```
+   r_max_norm = r_max * 720.0 / world_height   (clamped to prevent grid overflow)
+   r_min_norm = r_min * 720.0 / world_height
+   ```
+   At the default world (height=720) these equal the stored values unchanged. At a larger world they shrink, producing a finer grid and fewer neighbours per particle — `O(n)` GPU work instead of `O(n²)`.
+
+**Auto-density mode** (`sim.auto_density = true`): `auto_world_size()` recalculates `world_width/height` to maintain `density_target` (particles per world-unit²) as `particle_count` changes. Enabling this keeps GPU frame time roughly linear with particle count up to the grid-cell limit.
+
+**MAX_PARTICLES = 2,000,000** — GPU buffers are allocated for this at startup (~90 MB total). At auto-density scaling from the 5 K default, 2 M particles requires a world ≈25,600×14,400 and r_max_norm ≈ 0.004 (grid ≈500×500 = 250,000 cells, within MAX_GRID_CELLS = 300,000).
+
+**Preset load** (normal UI path): `app.rs` scales the world to the current window size after calling `apply_preset()`, preserving the preset's density. Benchmark loads bypass this to use the pinned tier dimensions.
+
+`fit_zoom` in `app.rs` is derived from world dimensions so the world fills the viewport at default zoom regardless of aspect ratio.
 
 ## Preset System
 
@@ -176,6 +192,10 @@ ndc = (pos - camera_center) * (shader_zoom * 2.0)
 - `SimulationState::to_preset()` — snapshot current state (used for export and session save)
 
 The `attraction` field in a preset is a compact `species_count × species_count` `Vec<f32>`. `apply_preset` expands it into the full 8×8 GPU layout.
+
+**Preset loading in normal UI flow** (`app.rs`): after calling `apply_preset()`, `app.rs` overrides `world_width/height/particle_count` to preserve the preset's density at the current window size. The preset's stored world dimensions are used only to compute the density ratio — they are not applied directly.
+
+**Benchmark loading**: `BenchmarkRunner::combo_preset()` and `CapacityBench::preset_for()` both return presets with `world_width`/`world_height` pinned to 1280×720 and `auto_density = false`. The benchmark handler calls `apply_preset()` directly without the density-scaling override, ensuring reproducible results.
 
 ## Attraction Matrix
 
@@ -196,16 +216,18 @@ The shader applies a quadratic falloff: `vel += direction * (strength * t² * dt
 
 ## Simulation Parameters
 
-| Field | Default | Range in UI |
-|-------|---------|-------------|
-| `r_min` | 0.025 | 0.001–0.1 |
-| `r_max` | 0.08 | 0.01–0.3 |
-| `friction` | 0.5 | 0–5 |
-| `force_scale` | 0.007 | 0.0001–0.05 |
-| `particle_radius` | 1.5 px | 0.5–12 px |
-| `border_repel_strength` | 5.0 | 0.1–30 |
+| Field | Default | Range in UI | Notes |
+|-------|---------|-------------|-------|
+| `r_min` | 0.025 | 0.001–0.1 | Fraction of `BASE_WORLD_HEIGHT`; GPU value = `r_min * 720 / world_height` |
+| `r_max` | 0.08 | 0.01–0.3 | Fraction of `BASE_WORLD_HEIGHT`; GPU value clamped to prevent grid overflow |
+| `friction` | 0.5 | 0–5 | |
+| `force_scale` | 0.007 | 0.0001–0.05 | |
+| `particle_radius` | 1.5 | 0.5–12 | World units; normalised by `world_height` in renderer |
+| `border_repel_strength` | 5.0 | 0.1–30 | |
+| `particle_count` | 5 000 | 100–2 000 000 | |
+| `world_width / world_height` | 1280 / 720 | 100–200 000 | Auto-computed if `auto_density` is on |
 
-CFL velocity cap in the shader: `max_speed = r_max / dt * 0.25`. This prevents tunneling. Do not remove it.
+CFL velocity cap in the shader: `max_speed = r_max_norm / dt * 0.25`. This prevents tunneling. Do not remove it.
 
 ## Critical winit/wgpu Patterns
 
@@ -220,6 +242,6 @@ CFL velocity cap in the shader: `max_speed = r_max / dt * 0.25`. This prevents t
 
 - **`encoder.clear_buffer(&cell_counts_buf, ...)`** before the count pass — must happen every frame; forgetting it produces garbage grid data
 - **Workgroup dispatch**: `(n + 63) / 64` — standard ceiling division for 64-thread workgroups
-- **Prefix scan dispatch**: always `(1, 1, 1)` — it's a serial scan of at most 40,000 elements, intentionally single-workgroup
+- **Prefix scan dispatch**: always `(1, 1, 1)` — it's a serial scan of up to 300,000 elements, intentionally single-workgroup (~0.3 ms at 2 M-particle scale)
 - **`PresentMode::Fifo`** — vsync; changing to `Mailbox` or `Immediate` is valid for uncapped FPS but changes perceived behavior
 - **`brange_x = r_max / aspect`** in the border repel section of `compute.wgsl` — equalises the visual repel zone on all four walls; removing the aspect correction makes left/right walls appear ~1.78× wider than top/bottom on a 16:9 display

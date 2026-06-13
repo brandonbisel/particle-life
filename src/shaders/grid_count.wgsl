@@ -1,3 +1,7 @@
+// Grid pass 1 — Count: each particle atomically increments the counter for its cell.
+// cell_counts[cell] holds the number of particles assigned to that cell after this pass.
+// The buffer is cleared to zero by the CPU (encoder.clear_buffer) before dispatch.
+
 struct Particle {
     position: vec2<f32>,
     velocity: vec2<f32>,

@@ -4,6 +4,7 @@
 //! they display and return response structs that `app.rs` acts on.
 
 use std::collections::VecDeque;
+use std::io::Cursor;
 
 use crate::simulation::{MAX_SPECIES, PALETTE_DEFAULT, SimulationState};
 use crate::{benchmark, config};
@@ -25,6 +26,8 @@ pub struct UiResponse {
     pub import_preset: bool,
     /// Open a file dialog to export a preset (caller handles the dialog).
     pub export_preset: bool,
+    /// Toggle the preset gallery window.
+    pub toggle_gallery: bool,
     /// The species palette was modified; caller should push it to the GPU.
     pub palette_changed: bool,
     /// Palette randomize was requested; caller calls `sim.randomize_palette()`.
@@ -39,6 +42,14 @@ pub struct BenchmarkPanelResponse {
     pub export_csv: bool,
     /// Start a quick single-point benchmark at the current particle count.
     pub start_quick: bool,
+    /// Start the capacity binary-search benchmark.
+    pub start_capacity: bool,
+    /// Export capacity results to CSV.
+    pub export_capacity_csv: bool,
+    /// Cancel the running suite benchmark.
+    pub cancel: bool,
+    /// Cancel the running capacity benchmark.
+    pub cancel_capacity: bool,
     /// `Some(v)` when the user toggled the global vsync checkbox.
     pub vsync: Option<bool>,
 }
@@ -54,12 +65,17 @@ pub enum Tool {
     Spawn,
 }
 
-/// Draw the right-side vertical toolbar: icon tool buttons and Reset View.
+/// Draw the right-side vertical toolbar: icon tool buttons, Reset View, Screenshot, and Gallery.
 ///
-/// Returns `(reset_view_clicked, toolbar_screen_rect)`.  The caller should
-/// pass the rect to [`draw_tool_options`] so it can position itself flush
+/// Returns `(reset_view_clicked, take_screenshot, toggle_gallery, toolbar_screen_rect)`.
+/// The caller should pass the rect to [`draw_tool_options`] so it can position itself flush
 /// against the toolbar's left edge.
-pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) {
+pub fn draw_toolbar(
+    ctx: &egui::Context,
+    tool: &mut Tool,
+    gallery_open: bool,
+    bench_running: bool,
+) -> (bool, bool, bool, egui::Rect) {
     // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
     let response = egui::Area::new(egui::Id::new("toolbar"))
         .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
@@ -68,6 +84,8 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) 
             egui::Frame::window(ui.style())
                 .show(ui, |ui| {
                     let mut rv = false;
+                    let mut take_screenshot = false;
+                    let mut toggle_gallery = false;
                     let icon_sz = egui::Vec2::splat(32.0);
 
                     let r = ui
@@ -107,8 +125,8 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) 
                     }
 
                     let r = ui
-                        .add_sized(
-                            icon_sz,
+                        .add_enabled(
+                            !bench_running,
                             egui::SelectableLabel::new(*tool == Tool::Attract, ph::MAGNET),
                         )
                         .on_hover_text("Attract — hold to pull nearby particles toward the cursor");
@@ -117,8 +135,8 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) 
                     }
 
                     let r = ui
-                        .add_sized(
-                            icon_sz,
+                        .add_enabled(
+                            !bench_running,
                             egui::SelectableLabel::new(
                                 *tool == Tool::Repel,
                                 ph::ARROWS_OUT_CARDINAL,
@@ -132,8 +150,8 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) 
                     }
 
                     let r = ui
-                        .add_sized(
-                            icon_sz,
+                        .add_enabled(
+                            !bench_running,
                             egui::SelectableLabel::new(*tool == Tool::Spawn, ph::SPARKLE),
                         )
                         .on_hover_text("Spawn — hold to emit new particles at the cursor");
@@ -151,12 +169,32 @@ pub fn draw_toolbar(ctx: &egui::Context, tool: &mut Tool) -> (bool, egui::Rect) 
                         rv = true;
                     }
 
-                    rv
+                    if ui
+                        .add_sized(icon_sz, egui::Button::new(ph::CAMERA))
+                        .on_hover_text("Save a screenshot to the screenshots/ folder")
+                        .clicked()
+                    {
+                        take_screenshot = true;
+                    }
+
+                    if ui
+                        .add_enabled(
+                            !bench_running,
+                            egui::SelectableLabel::new(gallery_open, ph::IMAGES),
+                        )
+                        .on_hover_text("Preset Gallery — browse presets visually")
+                        .clicked()
+                    {
+                        toggle_gallery = true;
+                    }
+
+                    (rv, take_screenshot, toggle_gallery)
                 })
                 .inner
         });
 
-    (response.inner, response.response.rect)
+    let (rv, take_screenshot, toggle_gallery) = response.inner;
+    (rv, take_screenshot, toggle_gallery, response.response.rect)
 }
 
 /// Draw the floating tool-options panel when a parametric tool is active.
@@ -251,6 +289,111 @@ pub fn draw_tool_options(
         });
 }
 
+/// Draw the floating preset gallery window.
+///
+/// Clicking a thumbnail immediately selects and applies that preset.
+/// Returns `true` if a preset was clicked (caller should set `apply_preset`).
+pub fn draw_gallery(
+    ctx: &egui::Context,
+    presets: &[config::Preset],
+    thumbnails: &[Option<egui::TextureHandle>],
+    selected_preset: &mut usize,
+    gallery_open: &mut bool,
+) -> bool {
+    let mut apply = false;
+    egui::Window::new("Preset Gallery")
+        .open(gallery_open)
+        .resizable(true)
+        .default_size([560.0, 420.0])
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let thumb_w = 170.0_f32;
+                let thumb_h = 106.0_f32;
+                let spacing = 8.0_f32;
+                let cols = ((ui.available_width() + spacing) / (thumb_w + spacing))
+                    .floor()
+                    .max(1.0) as usize;
+                let thumb_size = egui::Vec2::new(thumb_w, thumb_h);
+
+                egui::Grid::new("preset_gallery_grid")
+                    .num_columns(cols)
+                    .spacing([spacing, spacing])
+                    .show(ui, |ui| {
+                        for (i, preset) in presets.iter().enumerate() {
+                            let is_selected = i == *selected_preset;
+
+                            ui.vertical(|ui| {
+                                let (rect, resp) =
+                                    ui.allocate_exact_size(thumb_size, egui::Sense::click());
+                                let painter = ui.painter();
+
+                                if let Some(Some(handle)) = thumbnails.get(i) {
+                                    painter.image(
+                                        handle.id(),
+                                        rect,
+                                        egui::Rect::from_min_max(
+                                            egui::pos2(0.0, 0.0),
+                                            egui::pos2(1.0, 1.0),
+                                        ),
+                                        egui::Color32::WHITE,
+                                    );
+                                } else {
+                                    painter.rect_filled(rect, 3.0, egui::Color32::from_gray(35));
+                                    painter.text(
+                                        rect.center(),
+                                        egui::Align2::CENTER_CENTER,
+                                        &preset.name,
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::from_gray(140),
+                                    );
+                                }
+
+                                if is_selected {
+                                    painter.rect_stroke(
+                                        rect,
+                                        egui::CornerRadius::same(2),
+                                        egui::Stroke::new(
+                                            2.0,
+                                            egui::Color32::from_rgb(100, 180, 255),
+                                        ),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                } else if resp.hovered() {
+                                    painter.rect_stroke(
+                                        rect,
+                                        egui::CornerRadius::same(2),
+                                        egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                }
+
+                                let resp = if !preset.description.is_empty() {
+                                    resp.on_hover_text(&preset.description)
+                                } else {
+                                    resp
+                                };
+                                if resp.clicked() {
+                                    *selected_preset = i;
+                                    apply = true;
+                                }
+
+                                ui.label(egui::RichText::new(&preset.name).small());
+                            });
+
+                            if (i + 1) % cols == 0 {
+                                ui.end_row();
+                            }
+                        }
+                        // End the final partial row if needed
+                        if !presets.is_empty() && !presets.len().is_multiple_of(cols) {
+                            ui.end_row();
+                        }
+                    });
+            });
+        });
+    apply
+}
+
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
     (a as f32 + (b as f32 - a as f32) * t.clamp(0.0, 1.0)) as u8
 }
@@ -265,7 +408,7 @@ fn attraction_cell_color(v: f32) -> egui::Color32 {
     }
 }
 
-/// Palette theme definitions (sRGB packed `0xFF_BB_GG_RR`).
+/// Vivid palette — saturated primary hues (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_VIVID: [u32; 8] = [
     0xFF3232DC, // red    (220, 50, 50)
     0xFF32DC32, // green  (50, 220, 50)
@@ -276,6 +419,7 @@ pub const PALETTE_VIVID: [u32; 8] = [
     0xFF1E82DC, // orange (220, 130, 30)
     0xFFB446DC, // pink   (220, 70, 180)
 ];
+/// Neon palette — maximum-brightness electric colours (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_NEON: [u32; 8] = [
     0xFF1414FF, // neon-red     (255, 20, 20)
     0xFF14FF14, // neon-green   (20, 255, 20)
@@ -286,6 +430,7 @@ pub const PALETTE_NEON: [u32; 8] = [
     0xFF008CFF, // neon-orange  (255, 140, 0)
     0xFF00FF96, // neon-lime    (150, 255, 0)
 ];
+/// Pastel palette — soft, desaturated tints (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_PASTEL: [u32; 8] = [
     0xFFB4B4FF, // pastel-red    (255, 180, 180)
     0xFFB4FFB4, // pastel-green  (180, 255, 180)
@@ -296,6 +441,7 @@ pub const PALETTE_PASTEL: [u32; 8] = [
     0xFFB4DCFF, // pastel-orange (255, 220, 180)
     0xFFE1B4F5, // pastel-pink   (245, 180, 225)
 ];
+/// Dark palette — deep, low-luminance tones (sRGB packed `0xFF_BB_GG_RR`).
 pub const PALETTE_DARK: [u32; 8] = [
     0xFF1E1E96, // dark-red    (150, 30, 30)
     0xFF1E961E, // dark-green  (30, 150, 30)
@@ -307,6 +453,7 @@ pub const PALETTE_DARK: [u32; 8] = [
     0xFF6E1E96, // dark-pink   (150, 30, 110)
 ];
 
+/// All named palette themes in display order for the Theme combo-box.
 pub const PALETTE_THEMES: &[(&str, [u32; 8])] = &[
     ("Default", PALETTE_DEFAULT),
     ("Vivid", PALETTE_VIVID),
@@ -314,6 +461,64 @@ pub const PALETTE_THEMES: &[(&str, [u32; 8])] = &[
     ("Pastel", PALETTE_PASTEL),
     ("Dark", PALETTE_DARK),
 ];
+
+// ── Preset thumbnails ─────────────────────────────────────────────────────────
+
+fn decode_png_rgba(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let decoder = png::Decoder::new(Cursor::new(bytes));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).ok()?;
+    let pixels = &buf[..info.buffer_size()];
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgb => pixels
+            .chunks(3)
+            .flat_map(|c| [c[0], c[1], c[2], 255u8])
+            .collect(),
+        png::ColorType::Rgba => pixels.to_vec(),
+        _ => return None,
+    };
+    Some((info.width as usize, info.height as usize, rgba))
+}
+
+/// Try to load a PNG thumbnail for `name`.
+///
+/// Searches: `assets/images/preset-{slug}.png` (builtins),
+/// `assets/presets/{name}.png` (bundled), `presets/{name}.png` (user).
+pub fn load_preset_thumbnail(name: &str, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let slug = name.to_lowercase().replace(' ', "-");
+    let paths = [
+        format!("assets/images/preset-{slug}.png"),
+        format!("assets/presets/{name}.png"),
+        format!("presets/{name}.png"),
+    ];
+    for path in &paths {
+        if let Ok(bytes) = std::fs::read(path)
+            && let Some((w, h, rgba)) = decode_png_rgba(&bytes)
+        {
+            let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
+            return Some(ctx.load_texture(
+                format!("preset_thumb_{name}"),
+                image,
+                egui::TextureOptions::LINEAR,
+            ));
+        }
+    }
+    None
+}
+
+/// Load a thumbnail for every preset; `None` where no matching image is found.
+pub fn load_preset_thumbnails(
+    presets: &[config::Preset],
+    ctx: &egui::Context,
+) -> Vec<Option<egui::TextureHandle>> {
+    presets
+        .iter()
+        .map(|p| load_preset_thumbnail(&p.name, ctx))
+        .collect()
+}
+
+// ── Palette helpers ───────────────────────────────────────────────────────────
 
 /// Extract an egui `Color32` from a packed sRGB `0xFF_BB_GG_RR` palette entry.
 fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
@@ -326,19 +531,17 @@ fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
 }
 
 /// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border.
-pub fn draw_ui(
-    ctx: &egui::Context,
-    sim: &mut SimulationState,
-    presets: &[config::Preset],
-    selected_preset: &mut usize,
-) -> UiResponse {
+pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bool) -> UiResponse {
     let mut resp = UiResponse::default();
 
     egui::Window::new("Particle Life")
         .anchor(egui::Align2::LEFT_TOP, [10.0, 10.0])
         .show(ctx, |ui| {
+            if bench_running {
+                ui.disable();
+            }
             ui.add(
-                egui::Slider::new(&mut sim.particle_count, 100..=500_000)
+                egui::Slider::new(&mut sim.particle_count, 100..=2_000_000)
                     .text("Particles")
                     .logarithmic(true),
             )
@@ -352,7 +555,10 @@ pub fn draw_ui(
                     .text("Radius")
                     .step_by(0.5),
             )
-            .on_hover_text("Visual rendering radius of each particle in pixels");
+            .on_hover_text(
+                "Visual radius of each particle in screen pixels.  \
+                 Scales with camera zoom; independent of world size.",
+            );
             ui.horizontal(|ui| {
                 if ui
                     .button("Respawn")
@@ -375,25 +581,86 @@ pub fn draw_ui(
 
             ui.separator();
 
-            ui.label("World size (units):");
             ui.horizontal(|ui| {
-                ui.add(
+                ui.label("World size:");
+                ui.checkbox(&mut sim.auto_density, "Auto-density")
+                    .on_hover_text(
+                        "Automatically scale the world so particle density stays roughly constant \
+                         as particle count changes.  Keeps GPU load roughly linear with \
+                         particle count instead of quadratic.",
+                    );
+            });
+            if sim.auto_density {
+                ui.horizontal(|ui| {
+                    ui.radio_value(&mut sim.perf_auto, false, "Fixed density")
+                        .on_hover_text(
+                            "Scale world to maintain a fixed target density, applied on Respawn. \
+                             World size is computed from the density slider and current particle count.",
+                        );
+                    ui.radio_value(&mut sim.perf_auto, true, "Auto-performance")
+                        .on_hover_text(
+                            "Dynamically adjust world size every ~2 s to approach a target FPS. \
+                             No respawn needed — only r_max changes.",
+                        );
+                });
+                if sim.perf_auto {
+                    ui.add(
+                        egui::Slider::new(&mut sim.perf_target_fps, 15.0_f32..=240.0_f32)
+                            .text("Target FPS")
+                            .step_by(5.0),
+                    )
+                    .on_hover_text(
+                        "Target frame rate for the auto-performance controller.  The world size is \
+                         adjusted every ~2 s to approach this value without a respawn.  Higher target \
+                         → larger world, lower density; lower target → smaller world, higher density.",
+                    );
+                } else {
+                    let ref_area = 1280.0_f32 * 720.0_f32;
+                    let mut ref_count =
+                        (sim.density_target * ref_area).round().clamp(500.0, 2_000_000.0) as usize;
+                    if ui
+                        .add(
+                            egui::Slider::new(&mut ref_count, 500..=2_000_000)
+                                .text("Density equiv.")
+                                .logarithmic(true),
+                        )
+                        .on_hover_text(
+                            "Target density expressed as an equivalent particle count in a 1280×720 \
+                             world.  Lower = sparser (faster); higher = denser (richer physics).  \
+                             Applied on Respawn.",
+                        )
+                        .changed()
+                    {
+                        sim.density_target = ref_count as f32 / ref_area;
+                    }
+                }
+            }
+            ui.horizontal(|ui| {
+                let editable = !sim.auto_density;
+                ui.add_enabled(
+                    editable,
                     egui::DragValue::new(&mut sim.world_width)
                         .speed(10.0)
-                        .range(100.0..=10000.0)
+                        .range(100.0..=200_000.0)
                         .prefix("W: "),
                 )
-                .on_hover_text("World width in simulation units");
-                ui.add(
+                .on_hover_text(
+                    "World width in simulation units.  Larger worlds dilute particle \
+                     density, reducing the normalised interaction radius and GPU load.",
+                );
+                ui.add_enabled(
+                    editable,
                     egui::DragValue::new(&mut sim.world_height)
                         .speed(10.0)
-                        .range(100.0..=10000.0)
+                        .range(100.0..=200_000.0)
                         .prefix("H: "),
                 )
-                .on_hover_text("World height in simulation units");
+                .on_hover_text("World height in simulation units.  See world width.");
                 if ui
                     .button("Match Window")
-                    .on_hover_text("Resize the world to match the current window aspect ratio")
+                    .on_hover_text(
+                        "Set world size to match the current window dimensions and disable auto-density",
+                    )
                     .clicked()
                 {
                     resp.match_win = true;
@@ -408,7 +675,8 @@ pub fn draw_ui(
                     .step_by(0.001),
             )
             .on_hover_text(
-                "Hard-core repulsion radius — particles closer than this always repel each other, regardless of species",
+                "Hard-core repulsion radius as a fraction of the reference world height (720 units). \
+                 Particles closer than this always repel, regardless of species.",
             );
             ui.add(
                 egui::Slider::new(&mut sim.r_max, 0.01_f32..=0.3_f32)
@@ -416,7 +684,9 @@ pub fn draw_ui(
                     .step_by(0.005),
             )
             .on_hover_text(
-                "Maximum interaction distance — particles beyond this range are invisible to each other",
+                "Maximum interaction distance as a fraction of the reference world height (720 units). \
+                 At larger world sizes the effective GPU radius shrinks proportionally, \
+                 keeping neighbour count and performance constant.",
             );
             ui.add(
                 egui::Slider::new(&mut sim.friction, 0.0_f32..=5.0_f32)
@@ -469,29 +739,13 @@ pub fn draw_ui(
             egui::CollapsingHeader::new("Presets")
                 .default_open(false)
                 .show(ui, |ui| {
-                    let label = presets
-                        .get(*selected_preset)
-                        .map(|p| p.name.as_str())
-                        .unwrap_or("—");
-                    egui::ComboBox::from_label("")
-                        .selected_text(label)
-                        .show_ui(ui, |ui| {
-                            for (i, preset) in presets.iter().enumerate() {
-                                ui.selectable_value(selected_preset, i, &preset.name);
-                            }
-                        });
-                    if let Some(p) = presets.get(*selected_preset)
-                        && !p.description.is_empty()
-                    {
-                        ui.label(egui::RichText::new(&p.description).weak());
-                    }
                     ui.horizontal(|ui| {
                         if ui
-                            .button("Apply")
-                            .on_hover_text("Apply the selected preset to the simulation")
+                            .button("Gallery…")
+                            .on_hover_text("Browse presets visually with thumbnails")
                             .clicked()
                         {
-                            resp.apply_preset = true;
+                            resp.toggle_gallery = true;
                         }
                         if ui
                             .button("Import…")
@@ -726,19 +980,27 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, s
 ///
 /// The window starts collapsed; the benchmark sub-sections are inside a
 /// [`CollapsingHeader`](egui::CollapsingHeader) so they don't clutter the default view.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_perf_overlay(
     ctx: &egui::Context,
     frame_times: &VecDeque<f32>,
     sim: &SimulationState,
     quick_bench: &benchmark::QuickBench,
     runner: &mut benchmark::BenchmarkRunner,
+    capacity: &mut benchmark::CapacityBench,
     vsync: bool,
+    vsync_managed: bool,
     vsync_available: bool,
+    per_species_count: &[usize],
 ) -> BenchmarkPanelResponse {
     let mut resp = BenchmarkPanelResponse {
         start: false,
         export_csv: false,
         start_quick: false,
+        start_capacity: false,
+        export_capacity_csv: false,
+        cancel: false,
+        cancel_capacity: false,
         vsync: None,
     };
 
@@ -752,7 +1014,7 @@ pub fn draw_perf_overlay(
     let min_dt: f32 = frame_times.iter().cloned().fold(f32::MAX, f32::min);
     let max_dt: f32 = frame_times.iter().cloned().fold(0.0_f32, f32::max);
 
-    let grid_w = ((2.0 / sim.r_max) as usize).max(5);
+    let grid_w = ((2.0 / sim.r_max_normalised()) as usize).max(5);
     let n_cells = grid_w * grid_w;
     let density = sim.particle_count as f32 / n_cells as f32;
 
@@ -797,12 +1059,91 @@ pub fn draw_perf_overlay(
                     );
                     ui.label(format!("{n_cells} cells  {density:.0} avg/cell"));
                     ui.end_row();
+
+                    let r_max_norm = sim.r_max_normalised();
+                    let est_neighbors = (sim.particle_count as f32
+                        * std::f32::consts::PI
+                        * r_max_norm
+                        * r_max_norm) as u32;
+
+                    ui.label("Density").on_hover_text(
+                        "Particles per pixel² of world area and estimated average neighbours \
+                         per particle.  Both stay constant when auto-density is on.",
+                    );
+                    ui.label(format!(
+                        "{:.4} p/px²  ~{est_neighbors} nbrs",
+                        sim.density()
+                    ));
+                    ui.end_row();
+
+                    ui.label("r_max (GPU)").on_hover_text(
+                        "Effective interaction radius sent to the GPU: r_max × 720 / world_height. \
+                         At the default world (height 720) this equals the slider value. \
+                         Shrinks as the world grows, keeping the physical reach constant.",
+                    );
+                    ui.label(format!("{r_max_norm:.4}"));
+                    ui.end_row();
+
+                    if sim.auto_density && sim.perf_auto {
+                        let avg_fps = 1.0 / avg_dt;
+                        let at_limit = sim.perf_at_limit();
+                        let on_target = avg_fps >= sim.perf_target_fps * 0.95;
+                        let (label, color, tip) = if at_limit && !on_target {
+                            (
+                                "GPU limited",
+                                egui::Color32::from_rgb(255, 160, 60),
+                                "The world is at the maximum size where physics still improve. \
+                                 The target FPS is unachievable at the current particle count — \
+                                 lower the target or reduce particles.",
+                            )
+                        } else if on_target {
+                            (
+                                "On target",
+                                egui::Color32::from_rgb(100, 220, 100),
+                                "Auto-performance has converged; FPS is within 5% of the target.",
+                            )
+                        } else {
+                            (
+                                "Converging",
+                                egui::Color32::from_rgb(120, 180, 255),
+                                "Auto-performance is adjusting world size every ~2 s toward the target FPS.",
+                            )
+                        };
+                        ui.label("Auto-perf");
+                        ui.colored_label(color, label).on_hover_text(tip);
+                        ui.end_row();
+                    }
                 });
+
+            if !per_species_count.is_empty() {
+                ui.separator();
+                egui::CollapsingHeader::new("Species")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let total = per_species_count.iter().sum::<usize>().max(1);
+                        for (i, &count) in per_species_count.iter().enumerate() {
+                            let frac = count as f32 / total as f32;
+                            let color = species_color(i, &sim.palette);
+                            ui.add(
+                                egui::ProgressBar::new(frac)
+                                    .fill(color)
+                                    .text(format!("S{}: {count}", i + 1)),
+                            );
+                        }
+                    });
+            }
 
             ui.separator();
 
             // Global vsync toggle (Quick Bench follows this setting)
-            if vsync_available {
+            if vsync_managed {
+                ui.add_enabled(false, egui::Checkbox::new(&mut false, "VSync (managed)"))
+                    .on_hover_text(
+                        "VSync is disabled while Auto-performance is active — the FPS controller \
+                         needs to see true GPU frame times, not the monitor refresh rate.  \
+                         Your preference will be restored when Auto-performance is turned off.",
+                    );
+            } else if vsync_available {
                 let mut vsync_val = vsync;
                 if ui
                     .checkbox(&mut vsync_val, "VSync")
@@ -815,16 +1156,18 @@ pub fn draw_perf_overlay(
                 }
             } else {
                 ui.add_enabled(false, egui::Checkbox::new(&mut true, "VSync (unavailable)"))
-                    .on_hover_text("VSync toggle requires PresentMode::Immediate support from the adapter");
+                    .on_hover_text(
+                        "VSync toggle requires PresentMode::Immediate support from the adapter",
+                    );
             }
 
             ui.separator();
 
             // Quick bench
-            if let Some((frame, total, is_warmup)) = quick_bench.progress() {
+            if let Some((elapsed, total, is_warmup)) = quick_bench.progress() {
                 let phase = if is_warmup { "Warmup" } else { "Collecting" };
                 ui.label(format!("{phase}…"));
-                ui.add(egui::ProgressBar::new(frame as f32 / total as f32).show_percentage());
+                ui.add(egui::ProgressBar::new(elapsed / total).show_percentage());
             } else if let Some((avg, min, max, particles)) = quick_bench.result() {
                 ui.label(format!("Quick bench — {} particles", particles));
                 egui::Grid::new("qbench_grid")
@@ -851,7 +1194,7 @@ pub fn draw_perf_overlay(
             } else if ui
                 .button("Quick Bench")
                 .on_hover_text(
-                    "Measure average FPS at the current particle count (short warmup + collection run)",
+                    "Measure average FPS at the current particle count (5s warmup + 15s collection)",
                 )
                 .clicked()
             {
@@ -878,18 +1221,44 @@ pub fn draw_perf_overlay(
                         runner.vsync_off = !suite_vsync;
                     }
 
+                    ui.label(
+                        "Runs every preset × particle-count combination at fixed 1280×720 \
+                         (5s warmup + 15s collection each). ~5 minutes for 16 combos.",
+                    );
+                    ui.add_space(4.0);
+
                     if runner.is_running() {
                         if let Some((done, total, elapsed, target, is_warmup)) = runner.progress() {
                             let phase = if is_warmup { "Warmup" } else { "Collecting" };
+                            let preset_name = crate::config::builtin_presets()
+                                [benchmark::BenchmarkRunner::combo_preset_idx(done)]
+                                .name
+                                .clone();
+                            let particles = benchmark::BENCHMARK_TIERS
+                                [benchmark::BenchmarkRunner::combo_tier_idx(done)]
+                                .particles;
                             ui.label(format!(
-                                "Combo {}/{} — {} ({:.0}/{:.0}s)",
+                                "Combo {}/{} — {} — {}",
                                 done + 1,
                                 total,
-                                phase,
-                                elapsed,
-                                target
+                                preset_name,
+                                fmt_particles(particles),
                             ));
+                            ui.label(format!("{phase} ({:.1}/{:.0}s)", elapsed, target));
                             ui.add(egui::ProgressBar::new(elapsed / target).show_percentage());
+                            ui.add_space(2.0);
+                            let overall =
+                                (done as f32 + (elapsed / target).min(1.0)) / total as f32;
+                            ui.label(format!("Overall: combo {}/{}", done + 1, total));
+                            ui.add(egui::ProgressBar::new(overall).show_percentage());
+                        }
+                        ui.add_space(2.0);
+                        if ui
+                            .button("Cancel")
+                            .on_hover_text("Stop the suite and discard partial results")
+                            .clicked()
+                        {
+                            resp.cancel = true;
                         }
                     } else if runner.is_done() {
                         ui.label(format!("{} results ready", runner.results.len()));
@@ -901,11 +1270,6 @@ pub fn draw_perf_overlay(
                             resp.export_csv = true;
                         }
                     } else {
-                        ui.label(format!(
-                            "{} combos (4 presets × {} tiers)",
-                            benchmark::BenchmarkRunner::num_combos(),
-                            benchmark::BENCHMARK_TIERS.len(),
-                        ));
                         if ui
                             .button("Start Suite")
                             .on_hover_text(
@@ -917,7 +1281,134 @@ pub fn draw_perf_overlay(
                         }
                     }
                 });
+
+            ui.separator();
+
+            // Capacity benchmark: binary search for max particles at target FPS
+            let any_bench_running =
+                runner.is_running() || quick_bench.is_running() || capacity.is_running();
+            egui::CollapsingHeader::new("Capacity Benchmark")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(
+                        "Binary-searches for the maximum particle count that sustains a target \
+                         FPS at fixed 1280×720. Takes ~4 minutes for 4 presets.",
+                    );
+                    ui.add_space(4.0);
+
+                    if capacity.is_running() {
+                        if let Some(p) = capacity.progress() {
+                            let preset_name =
+                                crate::config::builtin_presets()[p.preset_idx].name.clone();
+                            let phase = if p.is_warmup { "Warmup" } else { "Collecting" };
+                            ui.label(format!(
+                                "Preset {}/{} — {} — iter {}/{}",
+                                p.preset_idx + 1,
+                                p.total_presets,
+                                preset_name,
+                                p.iter + 1,
+                                p.max_iters,
+                            ));
+                            ui.label(format!("Testing {} particles — {phase}", fmt_particles(p.particles)));
+                            ui.add(
+                                egui::ProgressBar::new(p.elapsed / p.target_secs)
+                                    .show_percentage(),
+                            );
+                            ui.add_space(2.0);
+                            let step_frac = (p.elapsed / p.target_secs).min(1.0);
+                            let overall = (p.preset_idx as f32 * p.max_iters as f32
+                                + p.iter as f32
+                                + step_frac)
+                                / (p.total_presets as f32 * p.max_iters as f32);
+                            ui.label(format!("Overall: preset {}/{}", p.preset_idx + 1, p.total_presets));
+                            ui.add(egui::ProgressBar::new(overall).show_percentage());
+                        }
+                        ui.add_space(2.0);
+                        if ui
+                            .button("Cancel")
+                            .on_hover_text("Stop the search and discard partial results")
+                            .clicked()
+                        {
+                            resp.cancel_capacity = true;
+                        }
+                    } else if capacity.is_done() && !capacity.results.is_empty() {
+                        ui.label(format!("Results — target {:.0} fps:", capacity.target_fps));
+                        egui::Grid::new("cap_results_grid")
+                            .num_columns(3)
+                            .striped(true)
+                            .min_col_width(55.0)
+                            .show(ui, |ui| {
+                                ui.label(egui::RichText::new("Preset").strong());
+                                ui.label(egui::RichText::new("Max particles").strong());
+                                ui.label(egui::RichText::new("Achieved fps").strong());
+                                ui.end_row();
+                                for r in &capacity.results {
+                                    ui.label(&r.preset_name);
+                                    if r.max_particles == 0 {
+                                        ui.label("< 1,000")
+                                            .on_hover_text("Target not achievable even at minimum");
+                                        ui.label("—");
+                                    } else if r.capped {
+                                        ui.label(format!("≥ {:>9}", fmt_particles(r.max_particles)))
+                                            .on_hover_text(
+                                                "GPU can sustain the target even at the 2M particle limit",
+                                            );
+                                        ui.label(format!("{:.0}", r.achieved_fps));
+                                    } else {
+                                        ui.label(format!("{:>9}", fmt_particles(r.max_particles)));
+                                        ui.label(format!("{:.0}", r.achieved_fps));
+                                    }
+                                    ui.end_row();
+                                }
+                            });
+                        ui.add_space(4.0);
+                        if ui
+                            .button("Export CSV…")
+                            .on_hover_text("Save capacity results to a CSV file")
+                            .clicked()
+                        {
+                            resp.export_capacity_csv = true;
+                        }
+                        ui.add_space(2.0);
+                    }
+
+                    if !capacity.is_running() {
+                        // Target FPS setting (disabled during run)
+                        ui.horizontal(|ui| {
+                            ui.label("Target FPS:");
+                            ui.add(
+                                egui::DragValue::new(&mut capacity.target_fps)
+                                    .range(10.0..=240.0)
+                                    .speed(1.0)
+                                    .suffix(" fps"),
+                            );
+                        });
+                        ui.add_space(2.0);
+                        let btn = ui
+                            .add_enabled(
+                                !any_bench_running,
+                                egui::Button::new("Start Capacity Bench"),
+                            )
+                            .on_hover_text(
+                                "Binary-search each preset for the highest particle count that \
+                                 sustains the target FPS (adaptive warmup 5–20s + 5s collect; Ecosystem waits for cluster to stabilise)",
+                            );
+                        if btn.clicked() {
+                            resp.start_capacity = true;
+                        }
+                    }
+                });
         });
 
     resp
+}
+
+fn fmt_particles(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.2}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.0}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }

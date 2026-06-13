@@ -1,6 +1,6 @@
 struct Globals {
     viewport:        vec2<f32>,
-    particle_radius: f32,    // normalized: particle_radius_wu / world_height
+    particle_radius: f32,    // normalized: particle_radius_px / viewport_height
     _pad0:           f32,
     camera_center:   vec2<f32>,
     camera_zoom:     f32,    // shader zoom = zoom_factor * fit_zoom
@@ -45,9 +45,9 @@ fn vs_main(
         (pos.y - globals.camera_center.y) * globals.camera_zoom * 2.0,
     );
 
-    // Particle quad offset: particle_radius is normalized (wu / world_height).
+    // Particle quad offset: particle_radius is normalized (px / viewport_height).
     // NDC offset is isotropic in screen pixels, producing a circle on screen.
-    // pixel_radius = particle_radius * camera_zoom * viewport_height
+    // pixel_radius = particle_radius * camera_zoom * viewport_height = radius_px * camera_zoom
     // ndc_off_x = pixel_radius / (viewport_w/2) = particle_radius * camera_zoom * 2 / viewport_aspect
     // ndc_off_y = pixel_radius / (viewport_h/2) = particle_radius * camera_zoom * 2
     let r = globals.particle_radius;

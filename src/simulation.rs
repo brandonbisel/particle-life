@@ -9,9 +9,19 @@
 
 /// Maximum number of species supported by the attraction matrix and PALETTE.
 pub const MAX_SPECIES: usize = 8;
-const MAX_PARTICLES: usize = 500_000;
-// cell = r_max/2, so grid_w = floor(2/r_max); at r_max=0.01 → 200×200 = 40 000 cells.
-const MAX_GRID_CELLS: usize = 40_000;
+/// Hard cap on the GPU particle buffer. Raising it increases VRAM by ~24 bytes/particle.
+pub const MAX_PARTICLES: usize = 2_000_000;
+// cell = r_max_norm/2, so grid_w = floor(2/r_max_norm).
+// At auto-density with 2M particles the grid reaches ~500×500 = 250K cells.
+const MAX_GRID_CELLS: usize = 300_000;
+
+/// The reference world height against which `r_min`/`r_max` preset values are defined.
+///
+/// Preset values like `r_max = 0.08` mean "8% of BASE_WORLD_HEIGHT world units", so they
+/// encode an absolute physical reach that scales correctly when the world grows.  At the
+/// default world (`world_height = 720`) the normalised value passed to the GPU equals the
+/// stored value unchanged.
+pub const BASE_WORLD_HEIGHT: f32 = 720.0;
 
 /// Default species colours as packed sRGB `0xFF_BB_GG_RR` u32s.
 ///
@@ -71,8 +81,24 @@ pub struct SimulationState {
     pub paused: bool,
     pub border_mode: u32, // 0 = Wrap, 1 = Repel, 2 = Static
     pub border_repel_strength: f32,
-    pub world_width: f32, // world units (= pixels at default zoom)
+    /// World dimensions in simulation units.  At the default 1280×720 these equal pixel
+    /// counts; at other sizes only the aspect ratio and ratio to [`BASE_WORLD_HEIGHT`]
+    /// affect physics (the normalised interaction radius shrinks as the world grows).
+    pub world_width: f32,
     pub world_height: f32,
+    /// When true, [`auto_world_size`](Self::auto_world_size) scales the world to keep
+    /// particle density constant at [`density_target`](Self::density_target).
+    pub auto_density: bool,
+    /// Target particle density in particles per square world-unit.  Default matches the
+    /// built-in preset default: 5 000 particles in a 1280×720 world.
+    pub density_target: f32,
+    /// When true (and `auto_density` is on), the world size is adjusted each frame via a
+    /// proportional FPS controller instead of a fixed [`density_target`](Self::density_target).
+    pub perf_auto: bool,
+    /// Target FPS for the auto-performance feedback controller.
+    pub perf_target_fps: f32,
+    // Accumulates dt between world-size adjustments in perf_auto mode.
+    perf_adj_timer: f32,
     // Mouse attractor/repulsor — set by app.rs each frame before dispatch.
     pub mouse_x: f32,
     pub mouse_y: f32,
@@ -124,6 +150,79 @@ impl SimulationState {
     /// `world_width / world_height` — passed to the shader to correct for non-square worlds.
     pub fn world_aspect(&self) -> f32 {
         self.world_width / self.world_height
+    }
+
+    /// Adjust world size toward [`perf_target_fps`](Self::perf_target_fps) using a proportional
+    /// controller based on the observed average FPS.
+    ///
+    /// Throttled to fire at most once every 2 seconds to let FPS stabilise after each adjustment.
+    /// No-ops when `!auto_density || !perf_auto`.  Particle positions are unaffected — no
+    /// respawn is needed.
+    pub fn perf_world_adjust(&mut self, avg_fps: f32, dt: f32) {
+        if !self.auto_density || !self.perf_auto || self.paused || avg_fps <= 0.0 {
+            return;
+        }
+        self.perf_adj_timer += dt;
+        if self.perf_adj_timer < 2.0 {
+            return;
+        }
+        self.perf_adj_timer = 0.0;
+
+        // GPU work is constant once r_max_norm hits its grid-cell floor.
+        // Growing beyond that point has zero effect on performance — cap there.
+        let r_norm_floor = 2.0 / (MAX_GRID_CELLS as f32).sqrt();
+        let effective_max_h = (self.r_max * BASE_WORLD_HEIGHT / r_norm_floor).min(200_000.0);
+
+        // GPU work ∝ r_max_norm² ∝ 1/world_height²; FPS ∝ world_height².
+        // Proportional step toward target: new_h = old_h × sqrt(target/current).
+        let ratio = (self.perf_target_fps / avg_fps).sqrt();
+        let ratio = ratio.clamp(0.5, 2.0); // max one doubling/halving per step
+        let aspect = self.world_aspect();
+        let new_h = (self.world_height * ratio).clamp(180.0, effective_max_h);
+        self.world_height = new_h;
+        self.world_width = new_h * aspect;
+    }
+
+    /// Recompute `world_width`/`world_height` to maintain [`density_target`](Self::density_target)
+    /// at the current `particle_count`.  No-ops when [`auto_density`](Self::auto_density) is false.
+    ///
+    /// Call this before [`respawn`](Self::respawn) whenever `particle_count` changes in
+    /// auto-density mode.
+    pub fn auto_world_size(&mut self) {
+        if !self.auto_density {
+            return;
+        }
+        let n = self.particle_count as f32;
+        let aspect = self.world_aspect();
+        let area = n / self.density_target;
+        let h = (area / aspect).sqrt();
+        self.world_height = h;
+        self.world_width = h * aspect;
+    }
+
+    /// The r_max value that will actually be sent to the GPU for the current world size.
+    ///
+    /// Equal to `r_max * BASE_WORLD_HEIGHT / world_height`, clamped so the grid cell
+    /// count never exceeds `MAX_GRID_CELLS`.
+    pub fn r_max_normalised(&self) -> f32 {
+        (self.r_max * BASE_WORLD_HEIGHT / self.world_height)
+            .max(2.0 / (MAX_GRID_CELLS as f32).sqrt())
+    }
+
+    /// Current particle density in particles per square world-unit.
+    pub fn density(&self) -> f32 {
+        self.particle_count as f32 / (self.world_width * self.world_height)
+    }
+
+    /// True when the auto-performance controller is at the effective GPU-work floor —
+    /// the world cannot grow further to reduce load, so the target FPS may be unachievable.
+    pub fn perf_at_limit(&self) -> bool {
+        if !self.auto_density || !self.perf_auto {
+            return false;
+        }
+        let r_norm_floor = 2.0 / (MAX_GRID_CELLS as f32).sqrt();
+        let effective_max_h = (self.r_max * BASE_WORLD_HEIGHT / r_norm_floor).min(200_000.0);
+        self.world_height >= effective_max_h * 0.99
     }
 
     pub fn new(
@@ -406,6 +505,11 @@ impl SimulationState {
             border_repel_strength: 5.0,
             world_width,
             world_height,
+            auto_density: false,
+            density_target: 5_000.0 / (1280.0 * 720.0),
+            perf_auto: false,
+            perf_target_fps: 60.0,
+            perf_adj_timer: 0.0,
             mouse_x: 0.5,
             mouse_y: 0.5,
             mouse_strength: 0.0,
@@ -510,13 +614,19 @@ impl SimulationState {
             return;
         }
 
+        // r_min/r_max are stored as fractions of BASE_WORLD_HEIGHT; normalise to [0,1]² space.
+        let scale = BASE_WORLD_HEIGHT / self.world_height;
+        // Clamp r_max so grid_w² = (2/r_max_norm)² never exceeds MAX_GRID_CELLS.
+        let r_max_norm = (self.r_max * scale).max(2.0 / (MAX_GRID_CELLS as f32).sqrt());
+        let r_min_norm = self.r_min * scale;
+
         queue.write_buffer(
             &self.params_buf,
             0,
             bytemuck::bytes_of(&SimParams {
                 dt,
-                r_min: self.r_min,
-                r_max: self.r_max,
+                r_min: r_min_norm,
+                r_max: r_max_norm,
                 friction: self.friction,
                 n_particles: n,
                 n_species: self.species_count as u32,
@@ -602,6 +712,14 @@ impl SimulationState {
         self.force_scale = preset.force_scale;
         self.border_mode = preset.border_mode;
         self.border_repel_strength = preset.border_repel_strength;
+        self.auto_density = preset.auto_density;
+        if let Some(dt) = preset.density_target {
+            self.density_target = dt;
+        }
+        self.perf_auto = preset.perf_auto;
+        if let Some(fps) = preset.perf_target_fps {
+            self.perf_target_fps = fps;
+        }
 
         // Copy compact n×n matrix into the full 8×8 layout.
         self.attraction = [0.0f32; 64];
@@ -647,6 +765,18 @@ impl SimulationState {
             force_scale: self.force_scale,
             border_mode: self.border_mode,
             border_repel_strength: self.border_repel_strength,
+            auto_density: self.auto_density,
+            density_target: if self.auto_density {
+                Some(self.density_target)
+            } else {
+                None
+            },
+            perf_auto: self.perf_auto,
+            perf_target_fps: if self.perf_auto {
+                Some(self.perf_target_fps)
+            } else {
+                None
+            },
             attraction,
             palette: Some(self.palette.to_vec()),
         }
@@ -691,7 +821,7 @@ impl SimulationState {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Convert HSV (h in [0,360), s and v in [0,1]) to a packed sRGB `0xFF_BB_GG_RR` u32.
+/// Convert HSV (h in \[0,360), s and v in \[0,1\]) to a packed sRGB `0xFF_BB_GG_RR` u32.
 fn hsv_to_packed_srgb(h: f32, s: f32, v: f32) -> u32 {
     let c = v * s;
     let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());

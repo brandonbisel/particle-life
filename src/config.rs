@@ -10,12 +10,22 @@ use std::path::{Path, PathBuf};
 pub const SESSION_PATH: &str = "session.toml";
 /// Directory scanned for user-created `*.toml` preset files.
 pub const PRESETS_DIR: &str = "presets";
+/// Directory where ad-hoc screenshots are saved.
+pub const SCREENSHOTS_DIR: &str = "screenshots";
 
 // ── Preset ────────────────────────────────────────────────────────────────────
 
 /// A complete snapshot of simulation parameters that can be saved and restored.
 ///
 /// Serialised as TOML; all fields map directly to [`SimulationState`](crate::simulation::SimulationState).
+///
+/// ## World size and interaction radius
+///
+/// `r_min` and `r_max` are stored as fractions of [`BASE_WORLD_HEIGHT`](crate::simulation::BASE_WORLD_HEIGHT)
+/// (720 world-units).  At the default world (`world_height = 720`) they equal the GPU-normalised
+/// value directly; at other world heights the engine scales them so that the *physical* reach in
+/// world-units stays constant.  This means increasing `world_height` dilutes particle density and
+/// keeps per-particle neighbour count—and therefore GPU load—roughly constant.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Preset {
     pub name: String,
@@ -23,20 +33,35 @@ pub struct Preset {
     pub description: String,
     pub particle_count: usize,
     pub species_count: usize,
-    /// World width in simulation units (pixels at default zoom).
+    /// World width in simulation units.  Together with `world_height` this sets the physical
+    /// scale of the world; only the aspect ratio and the ratio to `BASE_WORLD_HEIGHT` (720)
+    /// affect physics.
     pub world_width: f32,
-    /// World height in simulation units (pixels at default zoom).
+    /// World height in simulation units.  See `world_width`.
     pub world_height: f32,
     pub particle_radius: f32,
-    /// Hard-core repulsion radius.
+    /// Hard-core repulsion radius as a fraction of [`BASE_WORLD_HEIGHT`](crate::simulation::BASE_WORLD_HEIGHT).
     pub r_min: f32,
-    /// Outer interaction cutoff radius.
+    /// Outer interaction cutoff radius as a fraction of [`BASE_WORLD_HEIGHT`](crate::simulation::BASE_WORLD_HEIGHT).
     pub r_max: f32,
     pub friction: f32,
     pub force_scale: f32,
     /// 0 = Wrap, 1 = Repel, 2 = Static.
     pub border_mode: u32,
     pub border_repel_strength: f32,
+    /// When true the engine scales `world_width`/`world_height` to maintain `density_target`
+    /// as `particle_count` changes.
+    #[serde(default)]
+    pub auto_density: bool,
+    /// Target particle density in particles per square world-unit; `None` uses the engine default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density_target: Option<f32>,
+    /// When true (and `auto_density` is on), world size is adjusted dynamically to hit `perf_target_fps`.
+    #[serde(default)]
+    pub perf_auto: bool,
+    /// Target FPS for the auto-performance feedback controller; `None` uses the engine default (60).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perf_target_fps: Option<f32>,
     /// Row-major `species_count × species_count` attraction matrix; values in `[-1, 1]`.
     pub attraction: Vec<f32>,
     /// Per-species packed sRGB colours (`0xFF_BB_GG_RR`). Optional; absent means use default.
@@ -60,6 +85,10 @@ impl Preset {
             force_scale: 0.007,
             border_mode: 0,
             border_repel_strength: 5.0,
+            auto_density: false,
+            density_target: None,
+            perf_auto: false,
+            perf_target_fps: None,
             attraction,
             palette: None,
         }
@@ -144,6 +173,32 @@ fn symbiosis() -> Preset {
     )
 }
 
+// ── Bundled presets (TOML files embedded at compile time) ─────────────────────
+
+/// Returns presets embedded from `assets/presets/*.toml` at compile time.
+pub fn bundled_presets() -> Vec<Preset> {
+    let sources: &[(&str, &str)] = &[
+        (
+            "Snakes and Stripes",
+            include_str!("../assets/presets/Snakes and Stripes.toml"),
+        ),
+        (
+            "Snakes Rings Ships",
+            include_str!("../assets/presets/Snakes Rings Ships.toml"),
+        ),
+    ];
+    sources
+        .iter()
+        .filter_map(|(name, src)| match toml::from_str::<Preset>(src) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                log::warn!("Bundled preset '{name}' failed to parse: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
 // ── File I/O ──────────────────────────────────────────────────────────────────
 
 /// Parse a TOML preset from `path`.
@@ -170,12 +225,24 @@ pub fn load_presets_dir() -> Vec<Preset> {
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().map(|e| e == "toml").unwrap_or(false))
+        .filter(|p| {
+            !p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('_'))
+        })
         .collect();
     paths.sort();
     paths
         .iter()
         .filter_map(|p| match load_preset_file(p) {
-            Ok(preset) => Some(preset),
+            Ok(mut preset) => {
+                if (preset.name == "exported" || preset.name.is_empty())
+                    && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                {
+                    preset.name = stem.to_string();
+                }
+                Some(preset)
+            }
             Err(e) => {
                 log::warn!("Skipping {p:?}: {e}");
                 None
