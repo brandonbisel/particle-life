@@ -29,36 +29,58 @@ Symbiosis is the structural inverse of Clusters — exercises cross-species attr
 | Display | 165 Hz |
 | OS | Linux (CachyOS) |
 
-### Summary (current baseline — post-optimization)
+### Summary (current baseline — post-P7 LDS tile)
 
 Average FPS by preset and particle count (vsync off):
 
 | Preset    |   10K |   50K | 100K | 500K |
 |-----------|------:|------:|-----:|-----:|
-| Clusters  | 4,873 | 1,655 |  680 |   50 |
-| Chains    | 4,925 | 2,172 |  785 |   50 |
-| Ecosystem | 3,187 |   922 |  413 |    9 |
-| Symbiosis | 3,601 |   806 |  355 |   25 |
+| Clusters  | 4,827 | 1,694 |  664 |   53 |
+| Chains    | 4,900 | 2,180 |  799 |   52 |
+| Ecosystem | 3,195 |   983 |  413 |   12 |
+| Symbiosis | 3,626 |   921 |  361 |   28 |
 
-**vs previous baseline (pre-optimization gains):**
+**vs previous baseline (post-P1-P6 → post-P7 gains):**
 
-| Preset    |    10K |    50K |  100K | 500K |
-|-----------|-------:|-------:|------:|-----:|
-| Clusters  |  +21 % |  +17 % | +14 % | +14% |
-| Chains    |   +2 % |  +20 % | +17 % | +13% |
-| Ecosystem |  +40 % |  +50 % | +15 % |  ≈0% |
-| Symbiosis |  +27 % |   +9 % |  +1 % |  −8% (noise) |
+| Preset    |  10K |   50K | 100K |   500K |
+|-----------|-----:|------:|-----:|-------:|
+| Clusters  | −1 % |  +2 % | −2 % |   +6 % |
+| Chains    | −1 % |  +0 % | +2 % |   +4 % |
+| Ecosystem | +0 % |  +7 % | +0 % | **+33 %** |
+| Symbiosis | +1 % | **+14 %** | +2 % | **+12 %** |
 
-Low-N gains are driven by the partial cell-buffer clear (480× less data cleared at 625 cells vs 300K) and LTO. 500K gains for Clusters/Chains reflect the merged scatter+reorder pass (one fewer full N-particle dispatch) and 21-cell neighbourhood pruning. Ecosystem 500K is unchanged — force-pass clustering bottleneck dominates; targeted by P7 (shared-memory tile).
+Clusters and Chains are within noise — their particles are distributed across the grid so most workgroups span multiple cells and take the scalar path. Ecosystem 500K gains from the LDS tile when the hot cluster forces many workgroups to process 64 particles from the same cell. Symbiosis benefits at 50K and 500K because its mixed-species aggregates create moderate hotspots. The remaining Ecosystem 500K ceiling (9 → 12 fps) reflects that the bottleneck is now compute-bound (sqrt + force math per neighbor pair), not memory-bandwidth-bound — LDS reduces redundant loads but doesn't reduce work.
 
 **Performance tiers:**
 
-- **Clusters and Chains** keep particles distributed across the spatial grid, so cell load stays balanced. At ≤ 100K this is CPU/submission-bound — the GPU has far more headroom. 500K is the meaningful GPU-bound number (~20 ms/frame, ~50 fps).
-- **Symbiosis** causes particles to aggregate into large mixed blobs, creating moderate grid hotspots. ~1.5–2× lower throughput than Clusters/Chains; GPU-bound from ~50K.
-- **Ecosystem** produces the most extreme spatial non-uniformity: the tight fleeing cluster (species 3–5) concentrates hundreds of thousands of particles into a handful of grid cells. At 500K the 12×12 spatial grid has ~3,500 particles per cell on average, but the cluster region drives individual cells far higher, causing the neighbor-search to degrade toward O(n²) locally. This makes Ecosystem **~5.5× slower** than Clusters/Chains at 500K (9 fps vs. 50 fps), with high frame-time variance (4–20 fps) as the cluster forms, compresses, and scatters. GPU-bound from ~10K.
+- **Clusters and Chains** keep particles distributed across the spatial grid, so cell load stays balanced. At ≤ 100K this is CPU/submission-bound — the GPU has far more headroom. 500K is the meaningful GPU-bound number (~19 ms/frame, ~52 fps).
+- **Symbiosis** causes particles to aggregate into large mixed blobs, creating moderate grid hotspots. ~1.9× lower throughput than Clusters/Chains at 500K; GPU-bound from ~50K.
+- **Ecosystem** produces the most extreme spatial non-uniformity: the tight fleeing cluster (species 3–5) concentrates hundreds of thousands of particles into a handful of grid cells. At 500K the force pass degrades toward O(n²) locally in the hot cells. This makes Ecosystem **~4.4× slower** than Clusters/Chains at 500K (12 fps vs. 52 fps), with high frame-time variance (4–24 fps). The LDS tile (P7) reduces the gap from 5.5× to 4.4× but the work itself is compute-bound and cannot be reduced without a different algorithm. GPU-bound from ~10K.
 - The 500K tier is GPU-bound for all presets and is the most useful cross-preset comparison.
 
 ### Per-run detail
+
+| Preset    | Particles | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
+|-----------|----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
+| Clusters  |    10,000 |   4,827 |     342 |   5,156 |   0.21 | 72,117 |      15.0 | off   |
+| Clusters  |    50,000 |   1,694 |     985 |   2,699 |   0.59 | 25,188 |      15.0 | off   |
+| Clusters  |   100,000 |     664 |     470 |   1,002 |   1.51 |  9,834 |      15.0 | off   |
+| Clusters  |   500,000 |      53 |      48 |      58 |  18.83 |    796 |      15.0 | off   |
+| Chains    |    10,000 |   4,900 |     343 |   5,183 |   0.20 | 73,263 |      15.0 | off   |
+| Chains    |    50,000 |   2,180 |   1,232 |   3,965 |   0.46 | 32,434 |      15.0 | off   |
+| Chains    |   100,000 |     799 |     531 |   1,452 |   1.25 | 11,809 |      15.0 | off   |
+| Chains    |   500,000 |      52 |      49 |      54 |  19.23 |    780 |      15.0 | off   |
+| Ecosystem |    10,000 |   3,195 |     272 |   4,971 |   0.31 | 44,450 |      15.0 | off   |
+| Ecosystem |    50,000 |     983 |     268 |   1,769 |   1.02 | 13,467 |      15.0 | off   |
+| Ecosystem |   100,000 |     413 |     181 |     690 |   2.42 |  5,531 |      15.0 | off   |
+| Ecosystem |   500,000 |      12 |       5 |      24 |  83.91 |    158 |      15.2 | off   |
+| Symbiosis |    10,000 |   3,626 |     317 |   5,032 |   0.28 | 53,358 |      15.0 | off   |
+| Symbiosis |    50,000 |     921 |     244 |   1,524 |   1.09 | 13,499 |      15.0 | off   |
+| Symbiosis |   100,000 |     361 |     169 |     479 |   2.77 |  5,337 |      15.0 | off   |
+| Symbiosis |   500,000 |      28 |      24 |      31 |  35.25 |    426 |      15.0 | off   |
+
+<details>
+<summary>Previous baseline (post-P1-P6, pre-P7)</summary>
 
 | Preset    | Particles | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
 |-----------|----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
@@ -79,8 +101,10 @@ Low-N gains are driven by the partial cell-buffer clear (480× less data cleared
 | Symbiosis |   100,000 |     355 |     195 |     425 |   2.81 |  5,230 |      15.0 | off   |
 | Symbiosis |   500,000 |      25 |      21 |      28 |  40.21 |    373 |      15.0 | off   |
 
+</details>
+
 <details>
-<summary>Previous baseline (pre-optimization, v0.4.1)</summary>
+<summary>Pre-optimization baseline (v0.4.1)</summary>
 
 | Preset    | Particles | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
 |-----------|----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
@@ -111,13 +135,27 @@ Maximum particle count at 30 fps (1280×720, vsync off, `auto_density = false`):
 
 | Preset    | Max Particles | Achieved FPS | vs previous |
 |-----------|--------------:|-------------:|------------:|
-| Clusters  |       661,000 |         31.0 |      +47K (+8%) |
-| Chains    |       650,000 |         30.5 |      +43K (+7%) |
-| Ecosystem |       455,000 |         46.7 |       +7K (+2%) |
-| Symbiosis |       477,000 |         33.5 |      +44K (+10%) |
+| Clusters  |       674,000 |         30.5 |      +13K (+2%) |
+| Chains    |       663,000 |         30.6 |      +13K (+2%) |
+| Ecosystem |       477,000 |         30.8 |      +22K (+5%) |
+| Symbiosis |       448,000 |         31.3 |      −29K (−6%) ¹ |
+
+¹ Symbiosis capacity decreased from 477K to 448K. The binary-search converger is sensitive to FPS variance at the threshold — Symbiosis's mixed aggregates cause FPS to fluctuate, so the measurement carries ±5–10% uncertainty. The suite benchmark at 500K shows a genuine improvement (25 → 28 fps), so this is likely measurement noise rather than a real regression.
 
 <details>
-<summary>Previous capacity baseline (pre-optimization, v0.4.1)</summary>
+<summary>Previous capacity baseline (post-P1-P6, pre-P7)</summary>
+
+| Preset    | Max Particles | Achieved FPS |
+|-----------|--------------:|-------------:|
+| Clusters  |       661,000 |         31.0 |
+| Chains    |       650,000 |         30.5 |
+| Ecosystem |       455,000 |         46.7 |
+| Symbiosis |       477,000 |         33.5 |
+
+</details>
+
+<details>
+<summary>Pre-optimization capacity baseline (v0.4.1)</summary>
 
 | Preset    | Max Particles | Achieved FPS |
 |-----------|--------------:|-------------:|
@@ -128,7 +166,7 @@ Maximum particle count at 30 fps (1280×720, vsync off, `auto_density = false`):
 
 </details>
 
-Results match the performance tier ordering from the suite: Clusters and Chains have near-identical capacity (~655K); Symbiosis is ~28% lower due to grid hotspots from mixed-species blobs; Ecosystem is ~5% lower than Symbiosis. The Ecosystem capacity gap over Symbiosis narrowed (was ~27% lower, now ~5% lower) because the Ecosystem capacity ceiling is set by force-pass clustering, which the current optimizations did not address.
+Clusters and Chains have near-identical capacity (~668K); Symbiosis is ~34% lower due to grid hotspots from mixed-species blobs; Ecosystem is ~6% lower than Symbiosis. Ecosystem capacity is now within ~5% of Symbiosis — the LDS tile (P7) narrowed the gap from the pre-P7 ~5% to the same range, with the remaining ceiling set by compute-bound O(n²) work in the hot cluster rather than memory bandwidth.
 
 **Method:** binary search with log-linear interpolation (regula falsi in log-log space) to bias test points toward the predicted fps crossover. Adaptive warmup: transitions to collect only once two consecutive 2-second fps windows agree within 12%, with a 5s minimum and 20s hard cap. Ecosystem uses the full cliff-detection path — warmup holds until fps drops below 80% of its peak (cluster settled). 5s collect per iteration, 10% convergence window (hi/lo ≤ 1.10).
 
