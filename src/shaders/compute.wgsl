@@ -71,11 +71,11 @@ fn cs_main(
     let k   = gid.x;
     let lid = lid_vec.x;
 
-    // Inactive threads in the last partial workgroup clamp to particle 0 so they still
-    // reach every workgroupBarrier() in the tile path (uniform control flow requires
-    // all threads to hit barriers regardless of whether they are in-range).
-    let active = k < params.n_particles;
-    let k_read = select(0u, k, active);
+    // Out-of-range threads in the last partial workgroup clamp to particle 0 so they
+    // still reach every workgroupBarrier() in the tile path (uniform control flow
+    // requires all threads to hit barriers regardless of whether they are in-range).
+    let in_range = k < params.n_particles;
+    let k_read   = select(0u, k, in_range);
 
     let subj = sorted_entries[k_read];
     let i    = subj.index;
@@ -89,6 +89,7 @@ fn cs_main(
     let r_sum       = r_max + r_min;
     let inv_r_range = 1.0 / (r_max - r_min);
     let r_max_sq    = r_max * r_max;
+    let r_min_sq    = r_min * r_min;
     let wrapping    = params.border_mode == 0u;
 
     let grid_w = max(5u, u32(2.0 / r_max));
@@ -139,7 +140,7 @@ fn cs_main(
                     }
                     workgroupBarrier();
 
-                    if active {
+                    if in_range {
                         for (var t = 0u; t < tile_len; t++) {
                             let entry = tile[t];
                             if entry.index == i { continue; }
@@ -151,16 +152,16 @@ fn cs_main(
                             let dist_sq = dx_asp * dx_asp + delta.y * delta.y;
 
                             if dist_sq > 1e-8 && dist_sq < r_max_sq {
-                                let dist = sqrt(dist_sq);
-                                let a    = attraction[subj.species * 8u + entry.species];
+                                let inv_dist = inverseSqrt(dist_sq);
+                                let a        = attraction[subj.species * 8u + entry.species];
 
-                                let repulsion   = dist * inv_r_min - 1.0;
-                                let interaction = a * (1.0 - abs(2.0 * dist - r_sum) * inv_r_range);
-                                let mask_rep    = 1.0 - step(r_min, dist);
-                                let mask_int    = step(r_min, dist) * (1.0 - step(r_max, dist));
-                                let f           = mask_rep * repulsion + mask_int * interaction;
+                                // rep:  delta × (inv_r_min − inv_dist)
+                                // int:  delta × a × (inv_dist − |2 − r_sum·inv_dist| × inv_r_range)
+                                let rep_f    = inv_r_min - inv_dist;
+                                let int_f    = a * (inv_dist - abs(2.0 - r_sum * inv_dist) * inv_r_range);
+                                let f_scaled = select(int_f, rep_f, dist_sq < r_min_sq);
 
-                                force_acc += (delta / dist) * f;
+                                force_acc += delta * f_scaled;
                             }
                         }
                     }
@@ -171,7 +172,7 @@ fn cs_main(
         }
     } else {
         // SCALAR PATH — threads span different cells; each reads sorted_entries independently.
-        if active {
+        if in_range {
             for (var dy = -2; dy <= 2; dy++) {
                 for (var dx = -2; dx <= 2; dx++) {
                     if abs(dx) == 2 && abs(dy) == 2 { continue; }
@@ -195,16 +196,14 @@ fn cs_main(
                         let dist_sq = dx_asp * dx_asp + delta.y * delta.y;
 
                         if dist_sq > 1e-8 && dist_sq < r_max_sq {
-                            let dist = sqrt(dist_sq);
-                            let a    = attraction[subj.species * 8u + entry.species];
+                            let inv_dist = inverseSqrt(dist_sq);
+                            let a        = attraction[subj.species * 8u + entry.species];
 
-                            let repulsion   = dist * inv_r_min - 1.0;
-                            let interaction = a * (1.0 - abs(2.0 * dist - r_sum) * inv_r_range);
-                            let mask_rep    = 1.0 - step(r_min, dist);
-                            let mask_int    = step(r_min, dist) * (1.0 - step(r_max, dist));
-                            let f           = mask_rep * repulsion + mask_int * interaction;
+                            let rep_f    = inv_r_min - inv_dist;
+                            let int_f    = a * (inv_dist - abs(2.0 - r_sum * inv_dist) * inv_r_range);
+                            let f_scaled = select(int_f, rep_f, dist_sq < r_min_sq);
 
-                            force_acc += (delta / dist) * f;
+                            force_acc += delta * f_scaled;
                         }
                     }
                 }
@@ -212,7 +211,7 @@ fn cs_main(
         }
     }
 
-    if !active { return; }
+    if !in_range { return; }
 
     var vel = particles[i].velocity + force_acc * (params.force_scale * params.dt);
     vel    *= exp(-params.friction * params.dt);
