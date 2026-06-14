@@ -75,6 +75,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     for (var dy = -2; dy <= 2; dy++) {
         for (var dx = -2; dx <= 2; dx++) {
+            // Corner cells (|dx|==2 && |dy|==2) are at distance sqrt(2)*r_max — always
+            // outside the interaction radius. Skip them to save 4 outer-loop iterations.
+            if abs(dx) == 2 && abs(dy) == 2 { continue; }
             let nx   = ((gx_i + dx) % igw + igw) % igw;
             let ny   = ((gy_i + dy) % igw + igw) % igw;
             let cell = u32(ny * igw + nx);

@@ -3,9 +3,8 @@
 //! The pipeline runs entirely on the GPU each frame:
 //! 1. **Count** — atomically increment per-cell particle counts.
 //! 2. **Prefix** — exclusive prefix-sum to convert counts to cell offsets.
-//! 3. **Scatter** — write each particle's index into its cell slot.
-//! 4. **Reorder** — copy position/species data into cell-sorted order.
-//! 5. **Force** — compute pairwise Particle Life forces using the sorted grid.
+//! 3. **Scatter** — claim a slot per particle and write `SortedEntry` directly (merged reorder).
+//! 4. **Force** — compute pairwise Particle Life forces using the sorted grid.
 
 /// Maximum number of species supported by the attraction matrix and PALETTE.
 pub const MAX_SPECIES: usize = 8;
@@ -14,6 +13,8 @@ pub const MAX_PARTICLES: usize = 2_000_000;
 // cell = r_max_norm/2, so grid_w = floor(2/r_max_norm).
 // At auto-density with 2M particles the grid reaches ~500×500 = 250K cells.
 const MAX_GRID_CELLS: usize = 300_000;
+// Block count for the parallel prefix scan (prefix_a dispatches this many workgroups of 256).
+const MAX_PREFIX_BLOCKS: usize = MAX_GRID_CELLS.div_ceil(256) + 1;
 
 /// The reference world height against which `r_min`/`r_max` preset values are defined.
 ///
@@ -108,6 +109,10 @@ pub struct SimulationState {
     /// instead of distributing particles equally across all species.
     pub random_species_dist: bool,
 
+    // True whenever the attraction matrix has changed since the last dispatch.
+    // Uses Cell so dispatch (&self) can clear it without &mut self.
+    attraction_dirty: std::cell::Cell<bool>,
+
     gpu_particle_count: u32, // may exceed particles.len() after spawn_particles calls
     particles: Vec<Particle>, // CPU copy used for respawn seeding only
     rng: Rng,
@@ -119,20 +124,22 @@ pub struct SimulationState {
     #[allow(dead_code)]
     cell_offsets_buf: wgpu::Buffer, // exclusive prefix sum; MAX_GRID_CELLS+1 entries
     #[allow(dead_code)]
-    sorted_indices_buf: wgpu::Buffer, // particle indices sorted by cell
+    block_sums_buf: wgpu::Buffer,   // per-block totals for parallel prefix; MAX_PREFIX_BLOCKS entries
     #[allow(dead_code)]
     sorted_entries_buf: wgpu::Buffer, // position+species+index in cell-sorted order
 
     count_pipeline: wgpu::ComputePipeline,
-    prefix_pipeline: wgpu::ComputePipeline,
+    prefix_a_pipeline: wgpu::ComputePipeline,
+    prefix_b_pipeline: wgpu::ComputePipeline,
+    prefix_c_pipeline: wgpu::ComputePipeline,
     scatter_pipeline: wgpu::ComputePipeline,
-    reorder_pipeline: wgpu::ComputePipeline,
     force_pipeline: wgpu::ComputePipeline,
 
     count_bind_group: wgpu::BindGroup,
-    prefix_bind_group: wgpu::BindGroup,
+    prefix_a_bind_group: wgpu::BindGroup,
+    prefix_b_bind_group: wgpu::BindGroup,
+    prefix_c_bind_group: wgpu::BindGroup,
     scatter_bind_group: wgpu::BindGroup,
-    reorder_bind_group: wgpu::BindGroup,
     force_bind_group: wgpu::BindGroup,
 }
 
@@ -274,9 +281,10 @@ impl SimulationState {
             mapped_at_creation: false,
         });
 
-        let sorted_indices_buf = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Sorted Indices"),
-            size: (MAX_PARTICLES * std::mem::size_of::<u32>()) as u64,
+        // Block sums for the 3-pass parallel prefix scan: one u32 per block of 256 cells + 1 sentinel.
+        let block_sums_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Prefix Block Sums"),
+            size: (MAX_PREFIX_BLOCKS * std::mem::size_of::<u32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
         });
@@ -299,12 +307,30 @@ impl SimulationState {
             ],
         });
 
-        let prefix_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Prefix BGL"),
+        let prefix_a_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Prefix A BGL"),
             entries: &[
                 uniform_bgle(0),        // params
-                storage_bgle(1, false), // cell_counts (read_write / atomic)
-                storage_bgle(2, false), // cell_offsets (write)
+                storage_bgle(1, false), // cell_counts (atomic, zeroed here for scatter)
+                storage_bgle(2, false), // cell_offsets (write — local prefix sums)
+                storage_bgle(3, false), // block_sums (write — per-block totals)
+            ],
+        });
+
+        let prefix_b_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Prefix B BGL"),
+            entries: &[
+                uniform_bgle(0),        // params
+                storage_bgle(1, false), // block_sums (read_write — scan to exclusive prefix)
+            ],
+        });
+
+        let prefix_c_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Prefix C BGL"),
+            entries: &[
+                uniform_bgle(0),        // params
+                storage_bgle(1, false), // cell_offsets (read_write — add block base offsets)
+                storage_bgle(2, true),  // block_sums (read — block base offsets + sentinel)
             ],
         });
 
@@ -315,17 +341,7 @@ impl SimulationState {
                 uniform_bgle(1),        // params
                 storage_bgle(2, false), // cell_counts (atomic write cursors)
                 storage_bgle(3, true),  // cell_offsets (read)
-                storage_bgle(4, false), // sorted_indices (write)
-            ],
-        });
-
-        let reorder_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Reorder BGL"),
-            entries: &[
-                storage_bgle(0, true),  // particles (read)
-                uniform_bgle(1),        // params
-                storage_bgle(2, true),  // sorted_indices (read)
-                storage_bgle(3, false), // sorted_entries (write)
+                storage_bgle(4, false), // sorted_entries (write — merged scatter+reorder)
             ],
         });
 
@@ -347,23 +363,29 @@ impl SimulationState {
             include_str!("shaders/grid_count.wgsl"),
             &count_bgl,
         );
-        let prefix_pipeline = make_compute_pipeline(
+        let prefix_a_pipeline = make_compute_pipeline(
             device,
-            "Prefix Pipeline",
-            include_str!("shaders/grid_prefix.wgsl"),
-            &prefix_bgl,
+            "Prefix A Pipeline",
+            include_str!("shaders/grid_prefix_a.wgsl"),
+            &prefix_a_bgl,
+        );
+        let prefix_b_pipeline = make_compute_pipeline(
+            device,
+            "Prefix B Pipeline",
+            include_str!("shaders/grid_prefix_b.wgsl"),
+            &prefix_b_bgl,
+        );
+        let prefix_c_pipeline = make_compute_pipeline(
+            device,
+            "Prefix C Pipeline",
+            include_str!("shaders/grid_prefix_c.wgsl"),
+            &prefix_c_bgl,
         );
         let scatter_pipeline = make_compute_pipeline(
             device,
             "Scatter Pipeline",
             include_str!("shaders/grid_scatter.wgsl"),
             &scatter_bgl,
-        );
-        let reorder_pipeline = make_compute_pipeline(
-            device,
-            "Reorder Pipeline",
-            include_str!("shaders/grid_reorder.wgsl"),
-            &reorder_bgl,
         );
         let force_pipeline = make_compute_pipeline(
             device,
@@ -392,22 +414,33 @@ impl SimulationState {
             ],
         });
 
-        let prefix_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Prefix BG"),
-            layout: &prefix_bgl,
+        let prefix_a_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Prefix A BG"),
+            layout: &prefix_a_bgl,
             entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: params_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: cell_counts_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: cell_offsets_buf.as_entire_binding(),
-                },
+                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: cell_counts_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: cell_offsets_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: block_sums_buf.as_entire_binding() },
+            ],
+        });
+
+        let prefix_b_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Prefix B BG"),
+            layout: &prefix_b_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: block_sums_buf.as_entire_binding() },
+            ],
+        });
+
+        let prefix_c_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Prefix C BG"),
+            layout: &prefix_c_bgl,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: cell_offsets_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: block_sums_buf.as_entire_binding() },
             ],
         });
 
@@ -433,29 +466,6 @@ impl SimulationState {
                 },
                 wgpu::BindGroupEntry {
                     binding: 4,
-                    resource: sorted_indices_buf.as_entire_binding(),
-                },
-            ],
-        });
-
-        let reorder_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Reorder BG"),
-            layout: &reorder_bgl,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: particle_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: params_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: sorted_indices_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
                     resource: sorted_entries_buf.as_entire_binding(),
                 },
             ],
@@ -518,6 +528,7 @@ impl SimulationState {
             mouse_strength: 0.0,
             mouse_range: 0.1,
             random_species_dist: false,
+            attraction_dirty: std::cell::Cell::new(true),
             gpu_particle_count: 0,
             particles: Vec::new(),
             rng,
@@ -526,17 +537,19 @@ impl SimulationState {
             attraction_buf,
             cell_counts_buf,
             cell_offsets_buf,
-            sorted_indices_buf,
+            block_sums_buf,
             sorted_entries_buf,
             count_pipeline,
-            prefix_pipeline,
+            prefix_a_pipeline,
+            prefix_b_pipeline,
+            prefix_c_pipeline,
             scatter_pipeline,
-            reorder_pipeline,
             force_pipeline,
             count_bind_group,
-            prefix_bind_group,
+            prefix_a_bind_group,
+            prefix_b_bind_group,
+            prefix_c_bind_group,
             scatter_bind_group,
-            reorder_bind_group,
             force_bind_group,
         };
         sim.respawn(queue);
@@ -672,14 +685,20 @@ impl SimulationState {
                 _pad: [0; 2],
             }),
         );
-        queue.write_buffer(
-            &self.attraction_buf,
-            0,
-            bytemuck::cast_slice(&self.attraction),
-        );
+        if self.attraction_dirty.get() {
+            queue.write_buffer(
+                &self.attraction_buf,
+                0,
+                bytemuck::cast_slice(&self.attraction),
+            );
+            self.attraction_dirty.set(false);
+        }
 
-        // Clear cell counts to 0 before the count pass.
-        encoder.clear_buffer(&self.cell_counts_buf, 0, None);
+        // Clear only the cells in use (not the full MAX_GRID_CELLS allocation).
+        let grid_w = (2.0_f32 / r_max_norm) as u64;
+        let grid_w = grid_w.max(5);
+        let n_cells = grid_w * grid_w;
+        encoder.clear_buffer(&self.cell_counts_buf, 0, Some(n_cells * 4));
 
         let workgroups = n.div_ceil(64);
 
@@ -692,14 +711,35 @@ impl SimulationState {
             p.set_bind_group(0, &self.count_bind_group, &[]);
             p.dispatch_workgroups(workgroups, 1, 1);
         }
+        // 3-pass parallel prefix scan (Blelloch block scan → serial block-sum scan → propagate).
+        let n_blocks = (n_cells as u32).div_ceil(256);
         {
             let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Grid Prefix"),
+                label: Some("Grid Prefix A — block scan"),
                 timestamp_writes: None,
             });
-            p.set_pipeline(&self.prefix_pipeline);
-            p.set_bind_group(0, &self.prefix_bind_group, &[]);
+            p.set_pipeline(&self.prefix_a_pipeline);
+            p.set_bind_group(0, &self.prefix_a_bind_group, &[]);
+            p.dispatch_workgroups(n_blocks, 1, 1);
+        }
+        {
+            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Grid Prefix B — block-sums scan"),
+                timestamp_writes: None,
+            });
+            p.set_pipeline(&self.prefix_b_pipeline);
+            p.set_bind_group(0, &self.prefix_b_bind_group, &[]);
             p.dispatch_workgroups(1, 1, 1);
+        }
+        {
+            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Grid Prefix C — propagate"),
+                timestamp_writes: None,
+            });
+            p.set_pipeline(&self.prefix_c_pipeline);
+            p.set_bind_group(0, &self.prefix_c_bind_group, &[]);
+            // +256 ensures the sentinel at index n_cells is covered by a thread.
+            p.dispatch_workgroups((n_cells as u32 + 256) / 256, 1, 1);
         }
         {
             let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -708,15 +748,6 @@ impl SimulationState {
             });
             p.set_pipeline(&self.scatter_pipeline);
             p.set_bind_group(0, &self.scatter_bind_group, &[]);
-            p.dispatch_workgroups(workgroups, 1, 1);
-        }
-        {
-            let mut p = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("Grid Reorder"),
-                timestamp_writes: None,
-            });
-            p.set_pipeline(&self.reorder_pipeline);
-            p.set_bind_group(0, &self.reorder_bind_group, &[]);
             p.dispatch_workgroups(workgroups, 1, 1);
         }
         {
@@ -763,6 +794,7 @@ impl SimulationState {
                 }
             }
         }
+        self.attraction_dirty.set(true);
         if let Some(ref pal) = preset.palette {
             for (i, &c) in pal.iter().enumerate().take(MAX_SPECIES) {
                 self.palette[i] = c;
@@ -825,6 +857,12 @@ impl SimulationState {
     /// Fill the active sub-matrix: positive self-attraction on diagonal, random off-diagonal.
     pub fn randomize_attraction(&mut self) {
         seed_attraction_biased(&mut self.rng, &mut self.attraction, self.species_count);
+        self.attraction_dirty.set(true);
+    }
+
+    /// Mark the attraction matrix as changed so the next dispatch re-uploads it to the GPU.
+    pub fn mark_attraction_dirty(&self) {
+        self.attraction_dirty.set(true);
     }
 
     /// Generate random palette colours for the active species using evenly-spaced hues.

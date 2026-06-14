@@ -828,10 +828,8 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bo
                             resp.apply_share_code = Some(std::mem::take(&mut paste));
                         }
                     });
-                    if !paste.is_empty() {
-                        if let Err(e) = crate::config::decode_matrix(&paste) {
-                            ui.colored_label(egui::Color32::RED, format!("Invalid: {e}"));
-                        }
+                    if !paste.is_empty() && let Err(e) = crate::config::decode_matrix(&paste) {
+                        ui.colored_label(egui::Color32::RED, format!("Invalid: {e}"));
                     }
                     ui.data_mut(|d| d.insert_temp(paste_id, paste));
                 });
@@ -937,13 +935,16 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bo
                                         .show(ui, |ui| {
                                             ui.visuals_mut().widgets.inactive.weak_bg_fill =
                                                 egui::Color32::TRANSPARENT;
-                                            ui.add(
+                                            let resp = ui.add(
                                                 egui::DragValue::new(
                                                     &mut sim.attraction[i * MAX_SPECIES + j],
                                                 )
                                                 .range(-1.0_f32..=1.0_f32)
                                                 .speed(0.01),
                                             );
+                                            if resp.changed() {
+                                                sim.mark_attraction_dirty();
+                                            }
                                         });
                                 }
                                 ui.end_row();

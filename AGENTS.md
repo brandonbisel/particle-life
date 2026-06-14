@@ -61,7 +61,7 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 | `main.rs` | Entry point; creates `EventLoop` with `ControlFlow::Poll` |
 | `app.rs` | `AppHandler` / `AppState`; event routing, camera, per-frame orchestration |
 | `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
-| `simulation.rs` | `SimulationState`; GPU buffers, 5-pass compute dispatch, preset apply, spawn |
+| `simulation.rs` | `SimulationState`; GPU buffers, 6-pass compute dispatch, preset apply, spawn |
 | `config.rs` | `Preset` struct, four built-in presets, TOML I/O, session persistence |
 | `benchmark.rs` | `QuickBench` (ad-hoc), `BenchmarkRunner` (full suite + CSV export), `CapacityBench` (binary-search max-particle finder at target FPS) |
 | `ui.rs` | All egui draw functions; returns response structs — no app state owned here |
@@ -83,17 +83,18 @@ RedrawRequested
 
 Physics runs entirely on GPU. There is no CPU physics update path.
 
-### GPU Compute Pipeline (5 passes, all in `sim.dispatch()`)
+### GPU Compute Pipeline (6 passes, all in `sim.dispatch()`)
 
 | Pass | Shader | Notes |
 |------|--------|-------|
-| Count | `grid_count.wgsl` | Atomic increment per cell; cell_counts_buf cleared via `encoder.clear_buffer` before this |
-| Prefix | `grid_prefix.wgsl` | Serial scan (1 workgroup); produces cell_offsets; zeros cell_counts for reuse as scatter cursors |
-| Scatter | `grid_scatter.wgsl` | Assigns each particle a slot in sorted_indices via atomicAdd |
-| Reorder | `grid_reorder.wgsl` | Copies `{position, species, index}` → sorted_entries in cell order |
-| Force | `compute.wgsl` | 5×5 neighbor cells; reads sorted_entries sequentially (cache-friendly) |
+| Count | `grid_count.wgsl` | Atomic increment per cell; only `n_cells` bytes of cell_counts_buf cleared before this |
+| Prefix A | `grid_prefix_a.wgsl` | 256-thread Blelloch scan per block; writes local prefix sums + block totals; zeros cell_counts for scatter reuse |
+| Prefix B | `grid_prefix_b.wgsl` | Serial scan of ≤1173 block totals (vs 300K in the old single-pass design); stores grand total as sentinel |
+| Prefix C | `grid_prefix_c.wgsl` | Propagates block offsets to produce global prefix sums; writes cell_offsets[n_cells] sentinel |
+| Scatter | `grid_scatter.wgsl` | Merged scatter+reorder: claims a slot via atomicAdd and writes `SortedEntry{pos, species, index}` directly to sorted_entries |
+| Force | `compute.wgsl` | 21-cell neighborhood (corner cells pruned); reads sorted_entries sequentially (cache-friendly) |
 
-The reorder pass is performance-critical. Without it, the force pass does random reads into the particle buffer, which causes severe cache thrashing at high N. Do not remove or skip it.
+`sorted_entries` stores `{position: vec2<f32>, species: u32, index: u32}` (16 B per entry). The `index` field holds the original particle index and is used for both self-exclusion and write-back. Do not remove it.
 
 ### Spatial Grid
 

@@ -791,12 +791,10 @@ impl ApplicationHandler for AppHandler {
                     }
                 }
 
-                if ui_resp.paste_share_code {
-                    if let Some(text) = state.egui_state.clipboard_text() {
-                        state.egui_ctx.data_mut(|d| {
-                            d.insert_temp(egui::Id::new("share_code_paste_buf"), text);
-                        });
-                    }
+                if ui_resp.paste_share_code && let Some(text) = state.egui_state.clipboard_text() {
+                    state.egui_ctx.data_mut(|d| {
+                        d.insert_temp(egui::Id::new("share_code_paste_buf"), text);
+                    });
                 }
                 if let Some(code) = ui_resp.apply_share_code {
                     match config::decode_matrix(&code) {
@@ -810,6 +808,7 @@ impl ApplicationHandler for AppHandler {
                                         matrix[i * n + j];
                                 }
                             }
+                            state.sim.mark_attraction_dirty();
                             state.sim.respawn(state.renderer.queue());
                             state.frame_times.clear();
                             state.per_species_count = state.sim.species_counts();

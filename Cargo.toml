@@ -19,3 +19,7 @@ rfd        = "0.15"
 egui-phosphor = "0.9.0"
 png = "0.17"
 base64 = "0.22"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
