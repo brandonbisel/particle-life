@@ -32,6 +32,11 @@ pub struct UiResponse {
     pub palette_changed: bool,
     /// Palette randomize was requested; caller calls `sim.randomize_palette()`.
     pub randomize_palette: bool,
+    /// A share code was pasted and Apply clicked; caller decodes and applies it.
+    pub apply_share_code: Option<String>,
+    /// User clicked "Paste" in the share-code context menu; caller should write
+    /// clipboard text into egui temp storage under `share_code_paste_buf`.
+    pub paste_share_code: bool,
 }
 
 /// Actions requested by the Performance / benchmark panel.
@@ -774,6 +779,61 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bo
                             resp.export_preset = true;
                         }
                     });
+
+                    ui.separator();
+                    ui.label("Matrix share code:");
+
+                    // Copy row – display current code with a Copy button.
+                    let code =
+                        crate::config::encode_matrix(sim.species_count, &sim.attraction);
+                    ui.horizontal(|ui| {
+                        let mut display = code.clone();
+                        ui.add(
+                            egui::TextEdit::singleline(&mut display)
+                                .desired_width(170.0)
+                                .interactive(false),
+                        );
+                        if ui
+                            .button("Copy")
+                            .on_hover_text("Copy this code to the clipboard")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(code);
+                        }
+                    });
+
+                    // Paste row – input field + Apply button.
+                    let paste_id = egui::Id::new("share_code_paste_buf");
+                    let mut paste: String =
+                        ui.data(|d| d.get_temp(paste_id).unwrap_or_default());
+                    ui.horizontal(|ui| {
+                        let te = ui.add(
+                            egui::TextEdit::singleline(&mut paste)
+                                .desired_width(170.0)
+                                .hint_text("Paste code…"),
+                        );
+                        te.context_menu(|ui| {
+                            if ui.button("Paste").clicked() {
+                                resp.paste_share_code = true;
+                                ui.close_menu();
+                            }
+                        });
+                        let valid = !paste.is_empty()
+                            && crate::config::decode_matrix(&paste).is_ok();
+                        if ui
+                            .add_enabled(valid, egui::Button::new("Apply"))
+                            .on_hover_text("Apply the pasted matrix to the current simulation")
+                            .clicked()
+                        {
+                            resp.apply_share_code = Some(std::mem::take(&mut paste));
+                        }
+                    });
+                    if !paste.is_empty() {
+                        if let Err(e) = crate::config::decode_matrix(&paste) {
+                            ui.colored_label(egui::Color32::RED, format!("Invalid: {e}"));
+                        }
+                    }
+                    ui.data_mut(|d| d.insert_temp(paste_id, paste));
                 });
 
             ui.separator();

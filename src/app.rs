@@ -791,6 +791,34 @@ impl ApplicationHandler for AppHandler {
                     }
                 }
 
+                if ui_resp.paste_share_code {
+                    if let Some(text) = state.egui_state.clipboard_text() {
+                        state.egui_ctx.data_mut(|d| {
+                            d.insert_temp(egui::Id::new("share_code_paste_buf"), text);
+                        });
+                    }
+                }
+                if let Some(code) = ui_resp.apply_share_code {
+                    match config::decode_matrix(&code) {
+                        Ok((n, matrix)) => {
+                            state.sim.species_count = n;
+                            state.sim.attraction = [0.0f32; 64];
+                            for i in 0..n {
+                                for j in 0..n {
+                                    state.sim.attraction
+                                        [i * crate::simulation::MAX_SPECIES + j] =
+                                        matrix[i * n + j];
+                                }
+                            }
+                            state.sim.respawn(state.renderer.queue());
+                            state.frame_times.clear();
+                            state.per_species_count = state.sim.species_counts();
+                            state.renderer.update_palette(&state.sim.palette);
+                        }
+                        Err(e) => log::warn!("Share code apply failed: {e}"),
+                    }
+                }
+
                 // Global vsync toggle
                 if let Some(new_vsync) = bench_resp.vsync {
                     state.vsync = new_vsync;

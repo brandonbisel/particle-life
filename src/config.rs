@@ -251,6 +251,46 @@ pub fn load_presets_dir() -> Vec<Preset> {
         .collect()
 }
 
+// ── Share codes ───────────────────────────────────────────────────────────────
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+/// Encode the active n×n attraction matrix as a compact base64 share code.
+///
+/// Format: 1 byte `species_count`, then `n*n` bytes where each byte is the
+/// attraction value quantised from `[-1.0, 1.0]` to `i8` `[-127, 127]`.
+pub fn encode_matrix(species: usize, attraction: &[f32; 64]) -> String {
+    let mut bytes = Vec::with_capacity(1 + species * species);
+    bytes.push(species as u8);
+    for i in 0..species {
+        for j in 0..species {
+            let v = attraction[i * crate::simulation::MAX_SPECIES + j];
+            bytes.push((v.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+        }
+    }
+    STANDARD.encode(&bytes)
+}
+
+/// Decode a share code produced by [`encode_matrix`].
+///
+/// Returns `(species_count, row_major_n×n_values)` on success.
+pub fn decode_matrix(code: &str) -> Result<(usize, Vec<f32>), String> {
+    let bytes = STANDARD.decode(code.trim()).map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("empty code".into());
+    }
+    let n = bytes[0] as usize;
+    if n == 0 || n > crate::simulation::MAX_SPECIES {
+        return Err(format!("invalid species count {n}"));
+    }
+    let expected = 1 + n * n;
+    if bytes.len() != expected {
+        return Err(format!("expected {expected} bytes, got {}", bytes.len()));
+    }
+    let values = bytes[1..].iter().map(|&b| b as i8 as f32 / 127.0).collect();
+    Ok((n, values))
+}
+
 // ── Session ───────────────────────────────────────────────────────────────────
 
 /// Persist `preset` as the current session state (best-effort; logs on failure).
