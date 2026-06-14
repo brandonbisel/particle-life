@@ -1,8 +1,13 @@
-//! Preset serialisation, built-in preset library, and session persistence.
+//! Preset serialisation, built-in preset library, session persistence, and
+//! attraction-matrix share codes.
 //!
 //! A [`Preset`] captures every parameter needed to recreate a simulation state.
 //! Built-in presets are compiled into the binary; user presets are read from
 //! `presets/*.toml` and the last session is auto-saved to `session.toml`.
+//!
+//! [`encode_matrix`] / [`decode_matrix`] convert the active N×N attraction
+//! matrix to and from a compact base64 string suitable for sharing between
+//! running instances.
 
 use std::path::{Path, PathBuf};
 

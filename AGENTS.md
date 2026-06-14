@@ -193,6 +193,12 @@ ndc = (pos - camera_center) * (shader_zoom * 2.0)
 
 The `attraction` field in a preset is a compact `species_count × species_count` `Vec<f32>`. `apply_preset` expands it into the full 8×8 GPU layout.
 
+### Matrix Share Codes
+
+`config::encode_matrix(species, &attraction)` encodes the active sub-matrix as a base64 string: 1 byte species count followed by `n²` quantised `i8` values (each `f32` in `[-1, 1]` mapped to `[-127, 127]`). `config::decode_matrix(code)` reverses it, returning `(species_count, Vec<f32>)`.
+
+The share-code UI in the Presets panel exposes Copy (writes to egui clipboard via `ctx.copy_text`) and a paste field with a right-click context menu. The context menu sets `UiResponse::paste_share_code`; `app.rs` handles it by calling `egui_state.clipboard_text()` and writing the result into egui temp storage under the key `share_code_paste_buf`. This routes through egui-winit's existing arboard connection — **do not** create a separate `arboard::Clipboard` instance inside the draw closure, as that conflicts with the one egui-winit owns and silently fails on Wayland.
+
 **Preset loading in normal UI flow** (`app.rs`): after calling `apply_preset()`, `app.rs` overrides `world_width/height/particle_count` to preserve the preset's density at the current window size. The preset's stored world dimensions are used only to compute the density ratio — they are not applied directly.
 
 **Benchmark loading**: `BenchmarkRunner::combo_preset()` and `CapacityBench::preset_for()` both return presets with `world_width`/`world_height` pinned to 1280×720 and `auto_density = false`. The benchmark handler calls `apply_preset()` directly without the density-scaling override, ensuring reproducible results.
@@ -204,6 +210,7 @@ The `attraction` field in a preset is a compact `species_count × species_count`
 - Only the active `species_count × species_count` sub-matrix is meaningful; unused entries are zero
 - `randomize_attraction()` fills the active sub-matrix with uniform random `[-1, 1]`
 - Uploaded to `attraction_buf` (STORAGE, 256 bytes) each frame in `dispatch()`
+- Shareable via `config::encode_matrix` / `config::decode_matrix` — see **Matrix Share Codes** under Preset System above
 
 ## Mouse / Tool State
 

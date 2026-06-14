@@ -16,6 +16,7 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 - **Physical world size** — scales the simulation domain; auto-density mode keeps GPU load linear with particle count by growing the world as particles increase
 - **Configurable palette** — five built-in themes (Default, Vivid, Neon, Pastel, Dark), per-species color pickers, and randomize
 - **Preset system** — save, load, and import/export TOML presets; four built-in presets included; presets auto-scale to your window on load
+- **Matrix share codes** — copy a compact base64 string representing the current attraction matrix and paste it into any other running instance to share emergent behaviors
 - **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
 - **Performance overlay:** FPS, frame time min/max/avg, grid stats, density and neighbour estimate, VSync toggle
 - **Capacity benchmark** — binary-search mode finds the maximum sustainable particle count at a configurable target FPS; results exportable as CSV
@@ -88,6 +89,7 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `bytemuck`                           | 1       | Safe Pod casts for GPU buffer uploads        |
 | `pollster`                           | 0.3     | Block on async wgpu initialization           |
 | `serde` + `toml`                     | 1 / 0.8 | Preset serialisation                         |
+| `base64`                             | 0.22    | Matrix share-code encoding                   |
 | `rfd`                                | 0.15    | Native file dialogs for import/export        |
 | `png`                                | 0.17    | PNG encoding for screenshots and thumbnails  |
 | `log` + `env_logger`                 | 0.4 / 0.11 | Structured logging (adapter selection, warnings) |
