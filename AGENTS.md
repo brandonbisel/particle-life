@@ -92,9 +92,13 @@ Physics runs entirely on GPU. There is no CPU physics update path.
 | Prefix B | `grid_prefix_b.wgsl` | Serial scan of ≤1173 block totals (vs 300K in the old single-pass design); stores grand total as sentinel |
 | Prefix C | `grid_prefix_c.wgsl` | Propagates block offsets to produce global prefix sums; writes cell_offsets[n_cells] sentinel |
 | Scatter | `grid_scatter.wgsl` | Merged scatter+reorder: claims a slot via atomicAdd and writes `SortedEntry{pos, species, index}` directly to sorted_entries |
-| Force | `compute.wgsl` | 21-cell neighborhood (corner cells pruned); reads sorted_entries sequentially (cache-friendly) |
+| Force | `compute.wgsl` | 21-cell neighborhood (corner cells pruned); LDS tile path for homogeneous workgroups (clustering), scalar fallback otherwise |
 
 `sorted_entries` stores `{position: vec2<f32>, species: u32, index: u32}` (16 B per entry). The `index` field holds the original particle index and is used for both self-exclusion and write-back. Do not remove it.
+
+The force shader has two paths selected at runtime per workgroup:
+- **Tile path**: entered when all 64 threads are in the same grid cell (detected via `ws_diverged` workgroup atomic). Cooperatively loads neighbor cells into `var<workgroup> tile[64]` in rounds of 64, amortising global reads 64×. Workgroup size = TILE size, so one cooperative load pass fills exactly one tile with no waste.
+- **Scalar path**: entered when threads span multiple cells (cell boundaries, sparse distributions). Each thread reads `sorted_entries` independently — identical to the pre-P7 code.
 
 ### Spatial Grid
 
