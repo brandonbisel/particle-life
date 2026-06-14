@@ -1,10 +1,12 @@
-//! GPU simulation state and the five-pass spatial-grid compute pipeline.
+//! GPU simulation state and the six-pass spatial-grid compute pipeline.
 //!
 //! The pipeline runs entirely on the GPU each frame:
-//! 1. **Count** — atomically increment per-cell particle counts.
-//! 2. **Prefix** — exclusive prefix-sum to convert counts to cell offsets.
-//! 3. **Scatter** — claim a slot per particle and write `SortedEntry` directly (merged reorder).
-//! 4. **Force** — compute pairwise Particle Life forces using the sorted grid.
+//! 1. **Count**    — atomically increment per-cell particle counts.
+//! 2. **Prefix A** — 256-thread Blelloch block scan; writes block totals; zeros counts for scatter.
+//! 3. **Prefix B** — serial scan of ≤1,173 block totals.
+//! 4. **Prefix C** — propagates block offsets to produce final cell offsets.
+//! 5. **Scatter**  — claim a sorted slot per particle; writes `SortedEntry{pos, species, index}` directly.
+//! 6. **Force**    — 21-cell neighborhood; LDS tile for homogeneous workgroups; `inverseSqrt`-based force.
 
 /// Maximum number of species supported by the attraction matrix and PALETTE.
 pub const MAX_SPECIES: usize = 8;

@@ -9,7 +9,7 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 ## Features
 
 - **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
-- **500K particles** at 9–44 fps at fixed world size depending on particle distribution (Clusters/Chains 44 fps; Ecosystem 9 fps due to spatial-grid hotspots from a tight cluster); comparable frame rates at 2M with auto-density
+- **500K particles** at 25–59 fps at fixed world size depending on particle distribution (Clusters/Chains ~58 fps; Ecosystem ~25 fps with LDS tile and rsqrt force pass; see [Benchmarks](BENCHMARKS.md)); comparable frame rates at 2M with auto-density
 - **8 species** with a fully editable N×N attraction matrix
 - **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
@@ -46,19 +46,20 @@ Each pair of particles within range `r_max` interacts via a piecewise force:
 
 The attraction coefficient `A[i,j]` ∈ [-1, 1] is stored in an 8×8 matrix. Randomizing the matrix produces qualitatively different emergent behaviors: orbiting clusters, chain structures, single-species stars, and more.
 
-### GPU Pipeline (5 compute passes per frame)
+### GPU Pipeline (6 compute passes per frame)
 
 All physics runs on the GPU via [wgpu](https://github.com/gfx-rs/wgpu) compute shaders (WGSL). A spatial grid reduces the force pass from O(N²) to O(N · k) where k is average neighbors per cell.
 
 | Pass | Shader | Work |
 |------|--------|------|
 | 1. Count | `grid_count.wgsl` | Each particle atomically increments its cell's counter |
-| 2. Prefix | `grid_prefix.wgsl` | Serial exclusive scan → cell offsets; zeros counts for reuse |
-| 3. Scatter | `grid_scatter.wgsl` | Each particle claims a sorted slot via `atomicAdd` |
-| 4. Reorder | `grid_reorder.wgsl` | Copies `{position, species, index}` into `sorted_entries` in cell order |
-| 5. Force | `compute.wgsl` | 5×5 neighbor cell check; reads sequentially from `sorted_entries` |
+| 2. Prefix A | `grid_prefix_a.wgsl` | 256-thread Blelloch block scan; writes block totals; zeros counts for scatter reuse |
+| 3. Prefix B | `grid_prefix_b.wgsl` | Serial scan of ≤1,173 block totals (vs up to 300,000 in a naive approach) |
+| 4. Prefix C | `grid_prefix_c.wgsl` | Propagates block offsets to produce final per-cell offsets |
+| 5. Scatter | `grid_scatter.wgsl` | Claims a sorted slot via `atomicAdd`; writes `{position, species, index}` directly (reorder merged) |
+| 6. Force | `compute.wgsl` | 21-cell neighborhood; cooperative LDS tile for dense workgroups; `inverseSqrt`-based force |
 
-The reorder pass is critical: it converts random pointer-chasing in the force loop into sequential memory reads, recovering near-brute-force GPU cache throughput at large N.
+`sorted_entries` is written in cell-sorted order, converting per-neighbor random reads in the force loop into sequential memory access. In clustering scenarios the force pass uses workgroup-shared LDS tiles to amortise global reads across all 64 threads in a workgroup.
 
 **Grid parameters:** cell size = `r_max_norm / 2`, so `grid_w = max(5, floor(2 / r_max_norm))`. The effective `r_max_norm = r_max × 720 / world_height` shrinks as the world grows, producing a finer grid with fewer neighbours per particle. At default settings (r_max=0.08, world_height=720): 25×25 = 625 cells, ~80 particles/cell at 50K. At 500K with auto-density: ~250×250 = 62,500 cells, ~8 particles/cell — same GPU cost per particle.
 
@@ -136,17 +137,18 @@ src/
   main.rs              — Entry point; EventLoop + ControlFlow::Poll
   app.rs               — ApplicationHandler; owns window, renderer, sim, egui state, camera
   renderer.rs          — wgpu device/surface/pipeline; render() drives one frame
-  simulation.rs        — SimulationState; GPU buffers, 5-pass dispatch, spawn, preset apply
+  simulation.rs        — SimulationState; GPU buffers, 6-pass dispatch, spawn, preset apply
   benchmark.rs         — QuickBench (ad-hoc), BenchmarkRunner (full suite + CSV export), CapacityBench (max-particle binary search at target FPS)
   config.rs            — Preset struct, built-in presets, TOML save/load, session persistence
   ui.rs                — egui panels: toolbar, params, attraction matrix, perf overlay
   shaders/
     particle.wgsl      — Instanced soft-circle vertex + fragment shader
-    compute.wgsl       — Force integration (pass 5)
+    compute.wgsl       — Force integration (pass 6)
     grid_count.wgsl    — Spatial grid pass 1
-    grid_prefix.wgsl   — Spatial grid pass 2
-    grid_scatter.wgsl  — Spatial grid pass 3
-    grid_reorder.wgsl  — Spatial grid pass 4
+    grid_prefix_a.wgsl — Spatial grid pass 2 (Blelloch block scan)
+    grid_prefix_b.wgsl — Spatial grid pass 3 (block-sum scan)
+    grid_prefix_c.wgsl — Spatial grid pass 4 (offset propagation)
+    grid_scatter.wgsl  — Spatial grid pass 5 (scatter + reorder merged)
 ```
 
 ## Default Parameters
