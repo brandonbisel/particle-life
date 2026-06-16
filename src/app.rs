@@ -17,7 +17,7 @@ use winit::{
     window::{CursorIcon, Fullscreen, Window, WindowId},
 };
 
-use crate::{benchmark, config, icon, renderer::WgpuState, simulation::SimulationState, ui};
+use crate::{benchmark, config, icon, renderer, renderer::WgpuState, simulation::SimulationState, ui};
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 
@@ -123,6 +123,10 @@ struct AppState {
     // True while auto-performance is forcing vsync off; restored to `vsync` on exit.
     vsync_override: bool,
 
+    // Appearance
+    appearance: config::AppearanceConfig,
+    os_dark: bool,
+
     // Pending one-shot actions triggered by keyboard shortcuts
     pending_screenshot: bool,
 
@@ -220,6 +224,13 @@ impl ApplicationHandler for AppHandler {
         );
         let preset_thumbnails = ui::load_preset_thumbnails(&preset_library, &egui_ctx);
 
+        let appearance = config::load_appearance();
+        let os_dark = window
+            .theme()
+            .map(|t| t == winit::window::Theme::Dark)
+            .unwrap_or(true);
+        ui::apply_theme(&egui_ctx, appearance.ui_theme, os_dark);
+
         self.state = Some(AppState {
             renderer,
             sim,
@@ -239,6 +250,8 @@ impl ApplicationHandler for AppHandler {
             capacity_bench: benchmark::CapacityBench::new(),
             vsync: true,
             vsync_override: false,
+            appearance,
+            os_dark,
             tool: ui::Tool::Pan,
             tool_range: 0.1,
             mouse_strength: 2.0,
@@ -268,6 +281,7 @@ impl ApplicationHandler for AppHandler {
             WindowEvent::CloseRequested => {
                 if let Some(ref s) = self.state {
                     config::save_session(&s.sim.to_preset("session"));
+                    config::save_appearance(&s.appearance);
                 }
                 self.state = None;
                 event_loop.exit();
@@ -284,6 +298,7 @@ impl ApplicationHandler for AppHandler {
             } => {
                 if let Some(ref s) = self.state {
                     config::save_session(&s.sim.to_preset("session"));
+                    config::save_appearance(&s.appearance);
                 }
                 self.state = None;
                 event_loop.exit();
@@ -502,6 +517,11 @@ impl ApplicationHandler for AppHandler {
                 }
             }
 
+            WindowEvent::ThemeChanged(t) => {
+                state.os_dark = t == winit::window::Theme::Dark;
+                ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.os_dark);
+            }
+
             WindowEvent::RedrawRequested => {
                 let raw_dt = state.last_frame.elapsed().as_secs_f32();
                 state.last_frame = Instant::now();
@@ -581,6 +601,7 @@ impl ApplicationHandler for AppHandler {
                     let preset_thumbnails = &state.preset_thumbnails;
                     let gallery_open = &mut state.gallery_open;
                     let per_species_count = &state.per_species_count;
+                    let appearance = &mut state.appearance;
                     let mut ui_r = ui::UiResponse::default();
                     let mut bench_r = ui::BenchmarkPanelResponse {
                         start: false,
@@ -595,7 +616,7 @@ impl ApplicationHandler for AppHandler {
                     let mut reset_view = false;
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r = ui::draw_ui(ctx, sim, bench_running);
+                        ui_r = ui::draw_ui(ctx, sim, appearance, bench_running);
                         bench_r = ui::draw_perf_overlay(
                             ctx,
                             frame_times,
@@ -691,9 +712,12 @@ impl ApplicationHandler for AppHandler {
                         .unwrap_or_default()
                         .as_secs();
                     let path = dir.join(format!("screenshot_{secs}.png"));
-                    let png = state
-                        .renderer
-                        .capture_png(&state.sim, cam_center, shader_zoom);
+                    let png = state.renderer.capture_png(
+                        &state.sim,
+                        cam_center,
+                        shader_zoom,
+                        renderer::bg_color_from_srgb(state.appearance.bg_color),
+                    );
                     if let Err(e) = std::fs::write(&path, &png) {
                         log::warn!("Screenshot failed: {e}");
                     }
@@ -781,9 +805,12 @@ impl ApplicationHandler for AppHandler {
                     if let Err(e) = config::save_preset_file(&state.sim.to_preset(name), &path) {
                         log::warn!("Export failed: {e}");
                     } else {
-                        let png = state
-                            .renderer
-                            .capture_png(&state.sim, cam_center, shader_zoom);
+                        let png = state.renderer.capture_png(
+                            &state.sim,
+                            cam_center,
+                            shader_zoom,
+                            renderer::bg_color_from_srgb(state.appearance.bg_color),
+                        );
                         let thumb_path = path.with_extension("png");
                         if let Err(e) = std::fs::write(&thumb_path, &png) {
                             log::warn!("Thumbnail save failed: {e}");
@@ -816,6 +843,15 @@ impl ApplicationHandler for AppHandler {
                         }
                         Err(e) => log::warn!("Share code apply failed: {e}"),
                     }
+                }
+
+                if ui_resp.appearance_changed {
+                    ui::apply_theme(
+                        &state.egui_ctx,
+                        state.appearance.ui_theme,
+                        state.os_dark,
+                    );
+                    config::save_appearance(&state.appearance);
                 }
 
                 // Global vsync toggle
@@ -1002,6 +1038,7 @@ impl ApplicationHandler for AppHandler {
                     dt,
                     cam_center,
                     shader_zoom,
+                    renderer::bg_color_from_srgb(state.appearance.bg_color),
                 ) {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {

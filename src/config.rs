@@ -17,6 +17,66 @@ pub const SESSION_PATH: &str = "session.toml";
 pub const PRESETS_DIR: &str = "presets";
 /// Directory where ad-hoc screenshots are saved.
 pub const SCREENSHOTS_DIR: &str = "screenshots";
+/// Path to the persisted appearance/theme config.
+pub const APPEARANCE_PATH: &str = "appearance.toml";
+
+// ── Appearance ────────────────────────────────────────────────────────────────
+
+/// UI colour theme choices shown in the Appearance panel.
+#[derive(Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub enum UiTheme {
+    /// Follow the OS dark/light preference.
+    #[default]
+    System,
+    Dark,
+    Light,
+    Midnight,
+    Nord,
+    Catppuccin,
+}
+
+/// Persisted appearance preferences (theme + world background colour).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppearanceConfig {
+    #[serde(default)]
+    pub ui_theme: UiTheme,
+    /// World background colour as sRGB bytes `[R, G, B]`.
+    #[serde(default = "default_bg")]
+    pub bg_color: [u8; 3],
+}
+
+fn default_bg() -> [u8; 3] {
+    [3, 3, 5]
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            ui_theme: UiTheme::default(),
+            bg_color: default_bg(),
+        }
+    }
+}
+
+/// Persist appearance config to `appearance.toml` (best-effort; logs on failure).
+pub fn save_appearance(a: &AppearanceConfig) {
+    match toml::to_string_pretty(a) {
+        Ok(s) => {
+            if let Err(e) = std::fs::write(APPEARANCE_PATH, s) {
+                log::warn!("Failed to save appearance: {e}");
+            }
+        }
+        Err(e) => log::warn!("Failed to serialise appearance: {e}"),
+    }
+}
+
+/// Load `appearance.toml`, returning defaults if missing or malformed.
+pub fn load_appearance() -> AppearanceConfig {
+    std::fs::read_to_string(APPEARANCE_PATH)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
 
 // ── Preset ────────────────────────────────────────────────────────────────────
 

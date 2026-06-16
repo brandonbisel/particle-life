@@ -10,6 +10,25 @@ use winit::window::Window;
 
 use crate::simulation::{Particle, SimulationState};
 
+/// Convert an sRGB byte triplet to a wgpu linear-light `Color` suitable for use as a
+/// render-pass clear value.
+pub fn bg_color_from_srgb(c: [u8; 3]) -> wgpu::Color {
+    let lin = |b: u8| {
+        let s = b as f64 / 255.0;
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    wgpu::Color {
+        r: lin(c[0]),
+        g: lin(c[1]),
+        b: lin(c[2]),
+        a: 1.0,
+    }
+}
+
 /// Owns the wgpu device, surface, and both the particle and egui render pipelines.
 ///
 /// Created once at startup (inside [`AppHandler::resumed`](crate::app::AppHandler))
@@ -316,6 +335,7 @@ impl WgpuState {
         dt: f32,
         camera_center: [f32; 2],
         shader_zoom: f32,
+        bg_color: wgpu::Color,
     ) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -348,12 +368,7 @@ impl WgpuState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.01,
-                            g: 0.01,
-                            b: 0.02,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(bg_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -434,6 +449,7 @@ impl WgpuState {
         sim: &SimulationState,
         camera_center: [f32; 2],
         shader_zoom: f32,
+        bg_color: wgpu::Color,
     ) -> Vec<u8> {
         let width = self.surface_config.width;
         let height = self.surface_config.height;
@@ -489,12 +505,7 @@ impl WgpuState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.01,
-                            g: 0.01,
-                            b: 0.02,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(bg_color),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

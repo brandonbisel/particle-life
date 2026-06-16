@@ -11,6 +11,76 @@ use crate::{benchmark, config};
 
 use egui_phosphor::regular as ph;
 
+// ── Theme ─────────────────────────────────────────────────────────────────────
+
+/// Named world-background presets for the Appearance panel.
+pub const BG_PRESETS: &[(&str, [u8; 3])] = &[
+    ("Void", [3, 3, 5]),
+    ("Deep Space", [3, 5, 15]),
+    ("Midnight", [5, 10, 25]),
+    ("Obsidian", [15, 12, 18]),
+    ("Charcoal", [20, 20, 22]),
+    ("Ivory", [235, 230, 220]),
+    ("White", [255, 255, 255]),
+];
+
+/// Apply egui visuals for `theme`.  `os_dark` is used when `theme` is `System`.
+///
+/// Call at startup and whenever the theme or OS preference changes.
+pub fn apply_theme(ctx: &egui::Context, theme: config::UiTheme, os_dark: bool) {
+    match theme {
+        config::UiTheme::System => {
+            ctx.set_visuals(if os_dark {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+        }
+        config::UiTheme::Dark => ctx.set_visuals(egui::Visuals::dark()),
+        config::UiTheme::Light => ctx.set_visuals(egui::Visuals::light()),
+        config::UiTheme::Midnight => {
+            let mut v = egui::Visuals::dark();
+            v.panel_fill = egui::Color32::from_rgb(8, 10, 20);
+            v.window_fill = egui::Color32::from_rgb(10, 12, 25);
+            v.window_stroke.color = egui::Color32::from_rgb(40, 50, 80);
+            v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(12, 15, 30);
+            v.widgets.inactive.bg_fill = egui::Color32::from_rgb(20, 24, 45);
+            v.widgets.hovered.bg_fill = egui::Color32::from_rgb(30, 36, 65);
+            v.widgets.active.bg_fill = egui::Color32::from_rgb(40, 50, 90);
+            v.selection.bg_fill = egui::Color32::from_rgb(30, 80, 170);
+            ctx.set_visuals(v);
+        }
+        // Colors from the Nord palette by Arctic Ice Studio — nordtheme.com (MIT)
+        config::UiTheme::Nord => {
+            let mut v = egui::Visuals::dark();
+            v.panel_fill = egui::Color32::from_rgb(46, 52, 64);
+            v.window_fill = egui::Color32::from_rgb(59, 66, 82);
+            v.window_stroke.color = egui::Color32::from_rgb(76, 86, 106);
+            v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(59, 66, 82);
+            v.widgets.inactive.bg_fill = egui::Color32::from_rgb(67, 76, 94);
+            v.widgets.hovered.bg_fill = egui::Color32::from_rgb(76, 86, 106);
+            v.widgets.active.bg_fill = egui::Color32::from_rgb(136, 192, 208);
+            v.selection.bg_fill = egui::Color32::from_rgb(94, 129, 172);
+            v.override_text_color = Some(egui::Color32::from_rgb(236, 239, 244));
+            ctx.set_visuals(v);
+        }
+        // Colors from the Catppuccin Mocha palette by the Catppuccin org — catppuccin.com (MIT)
+        config::UiTheme::Catppuccin => {
+            let mut v = egui::Visuals::dark();
+            v.panel_fill = egui::Color32::from_rgb(24, 24, 37);
+            v.window_fill = egui::Color32::from_rgb(30, 30, 46);
+            v.window_stroke.color = egui::Color32::from_rgb(49, 50, 68);
+            v.widgets.noninteractive.bg_fill = egui::Color32::from_rgb(30, 30, 46);
+            v.widgets.inactive.bg_fill = egui::Color32::from_rgb(49, 50, 68);
+            v.widgets.hovered.bg_fill = egui::Color32::from_rgb(58, 60, 78);
+            v.widgets.active.bg_fill = egui::Color32::from_rgb(108, 112, 134);
+            v.selection.bg_fill = egui::Color32::from_rgb(137, 180, 250);
+            v.override_text_color = Some(egui::Color32::from_rgb(205, 214, 244));
+            ctx.set_visuals(v);
+        }
+    }
+}
+
 // ── UI response ───────────────────────────────────────────────────────────────
 
 /// Actions requested by the main Particle Life panel.
@@ -37,6 +107,9 @@ pub struct UiResponse {
     /// User clicked "Paste" in the share-code context menu; caller should write
     /// clipboard text into egui temp storage under `share_code_paste_buf`.
     pub paste_share_code: bool,
+    /// Theme or background colour changed; caller should apply the new visuals and
+    /// persist `appearance`.
+    pub appearance_changed: bool,
 }
 
 /// Actions requested by the Performance / benchmark panel.
@@ -543,7 +616,12 @@ fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
 }
 
 /// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border.
-pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bool) -> UiResponse {
+pub fn draw_ui(
+    ctx: &egui::Context,
+    sim: &mut SimulationState,
+    appearance: &mut config::AppearanceConfig,
+    bench_running: bool,
+) -> UiResponse {
     let mut resp = UiResponse::default();
 
     egui::Window::new("Particle Life")
@@ -892,6 +970,97 @@ pub fn draw_ui(ctx: &egui::Context, sim: &mut SimulationState, bench_running: bo
                                     resp.palette_changed = true;
                                 }
                             });
+                        }
+                    });
+                });
+
+            ui.separator();
+
+            egui::CollapsingHeader::new("Appearance")
+                .default_open(false)
+                .show(ui, |ui| {
+                    let theme_name = |t: config::UiTheme| match t {
+                        config::UiTheme::System => "System",
+                        config::UiTheme::Dark => "Dark",
+                        config::UiTheme::Light => "Light",
+                        config::UiTheme::Midnight => "Midnight",
+                        config::UiTheme::Nord => "Nord",
+                        config::UiTheme::Catppuccin => "Catppuccin",
+                    };
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_label("UI Theme")
+                            .selected_text(theme_name(appearance.ui_theme))
+                            .show_ui(ui, |ui| {
+                                for t in [
+                                    config::UiTheme::System,
+                                    config::UiTheme::Dark,
+                                    config::UiTheme::Light,
+                                    config::UiTheme::Midnight,
+                                    config::UiTheme::Nord,
+                                    config::UiTheme::Catppuccin,
+                                ] {
+                                    let attribution = match t {
+                                        config::UiTheme::Nord => {
+                                            Some("Nord palette by Arctic Ice Studio — nordtheme.com")
+                                        }
+                                        config::UiTheme::Catppuccin => Some(
+                                            "Catppuccin Mocha palette by the Catppuccin org — catppuccin.com",
+                                        ),
+                                        _ => None,
+                                    };
+                                    let label = ui.selectable_label(
+                                        appearance.ui_theme == t,
+                                        theme_name(t),
+                                    );
+                                    let label = if let Some(a) = attribution {
+                                        label.on_hover_text(a)
+                                    } else {
+                                        label
+                                    };
+                                    if label.clicked() {
+                                        appearance.ui_theme = t;
+                                        resp.appearance_changed = true;
+                                    }
+                                }
+                            });
+                    });
+
+                    ui.separator();
+
+                    ui.label("Background:");
+                    ui.horizontal(|ui| {
+                        let current_preset = BG_PRESETS
+                            .iter()
+                            .find(|(_, c)| c == &appearance.bg_color)
+                            .map(|(n, _)| *n)
+                            .unwrap_or("Custom");
+                        egui::ComboBox::from_id_salt("bg_preset")
+                            .selected_text(current_preset)
+                            .show_ui(ui, |ui| {
+                                for &(name, color) in BG_PRESETS {
+                                    if ui
+                                        .selectable_label(appearance.bg_color == color, name)
+                                        .clicked()
+                                    {
+                                        appearance.bg_color = color;
+                                        resp.appearance_changed = true;
+                                    }
+                                }
+                            });
+                        let mut c32 = egui::Color32::from_rgb(
+                            appearance.bg_color[0],
+                            appearance.bg_color[1],
+                            appearance.bg_color[2],
+                        );
+                        if egui::color_picker::color_edit_button_srgba(
+                            ui,
+                            &mut c32,
+                            egui::color_picker::Alpha::Opaque,
+                        )
+                        .changed()
+                        {
+                            appearance.bg_color = [c32.r(), c32.g(), c32.b()];
+                            resp.appearance_changed = true;
                         }
                     });
                 });
