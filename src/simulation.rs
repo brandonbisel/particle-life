@@ -237,9 +237,12 @@ impl SimulationState {
         self.world_height >= effective_max_h * 0.99
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        tile_size: u32,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
         particle_count: usize,
         species_count: usize,
         world_width: f32,
@@ -359,41 +362,60 @@ impl SimulationState {
         });
 
         // ── Pipelines ────────────────────────────────────────────────────────
+        let no_constants = std::collections::HashMap::new();
+        // TILE override: AMD uses 64 (one full wavefront); all others use 32.
+        let force_constants: std::collections::HashMap<String, f64> =
+            [("TILE".to_string(), tile_size as f64)]
+                .into_iter()
+                .collect();
+
         let count_pipeline = make_compute_pipeline(
             device,
             "Count Pipeline",
             include_str!("shaders/grid_count.wgsl"),
             &count_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let prefix_a_pipeline = make_compute_pipeline(
             device,
             "Prefix A Pipeline",
             include_str!("shaders/grid_prefix_a.wgsl"),
             &prefix_a_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let prefix_b_pipeline = make_compute_pipeline(
             device,
             "Prefix B Pipeline",
             include_str!("shaders/grid_prefix_b.wgsl"),
             &prefix_b_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let prefix_c_pipeline = make_compute_pipeline(
             device,
             "Prefix C Pipeline",
             include_str!("shaders/grid_prefix_c.wgsl"),
             &prefix_c_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let scatter_pipeline = make_compute_pipeline(
             device,
             "Scatter Pipeline",
             include_str!("shaders/grid_scatter.wgsl"),
             &scatter_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let force_pipeline = make_compute_pipeline(
             device,
             "Force Pipeline",
             include_str!("shaders/compute.wgsl"),
             &force_bgl,
+            &force_constants,
+            pipeline_cache,
         );
 
         // ── Bind groups ──────────────────────────────────────────────────────
@@ -995,6 +1017,8 @@ fn make_compute_pipeline(
     label: &str,
     wgsl: &str,
     bgl: &wgpu::BindGroupLayout,
+    constants: &std::collections::HashMap<String, f64>,
+    cache: Option<&wgpu::PipelineCache>,
 ) -> wgpu::ComputePipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -1010,8 +1034,11 @@ fn make_compute_pipeline(
         layout: Some(&layout),
         module: &shader,
         entry_point: Some("cs_main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants,
+            ..Default::default()
+        },
+        cache,
     })
 }
 

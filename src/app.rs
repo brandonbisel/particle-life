@@ -200,6 +200,8 @@ impl ApplicationHandler for AppHandler {
         let mut sim = SimulationState::new(
             renderer.device(),
             renderer.queue(),
+            renderer.tile_size(),
+            renderer.pipeline_cache(),
             1000,
             6,
             world_width,
@@ -282,6 +284,7 @@ impl ApplicationHandler for AppHandler {
         match &event {
             WindowEvent::CloseRequested => {
                 if let Some(ref s) = self.state {
+                    s.renderer.save_pipeline_cache();
                     config::save_session(&s.sim.to_preset("session"));
                     config::save_appearance(&s.appearance);
                 }
@@ -299,6 +302,7 @@ impl ApplicationHandler for AppHandler {
                 ..
             } => {
                 if let Some(ref s) = self.state {
+                    s.renderer.save_pipeline_cache();
                     config::save_session(&s.sim.to_preset("session"));
                     config::save_appearance(&s.appearance);
                 }

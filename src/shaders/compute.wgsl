@@ -5,11 +5,12 @@
 // integrates velocity and position.  Reading from sorted_entries instead of through
 // sorted_indices avoids random pointer-chasing and keeps GPU caches warm at high N.
 //
-// Shared-memory tile path: when all 64 threads in a workgroup process particles from the
+// Shared-memory tile path: when all TILE threads in a workgroup process particles from the
 // same grid cell (common in Ecosystem/Symbiosis clustering), their 21-cell neighborhood is
-// identical.  The workgroup cooperatively loads each neighbor cell into a 64-entry LDS tile
-// in rounds, so each global read is shared across all 64 threads instead of repeated 64x.
+// identical.  The workgroup cooperatively loads each neighbor cell into an LDS tile in rounds
+// of TILE entries, so each global read is amortised across all threads.
 // The scalar path handles boundary workgroups and uniformly-distributed particle layouts.
+// TILE is an override constant (default 64); set to 32 for NVIDIA/Metal/Intel at startup.
 
 struct Particle {
     position: vec2<f32>,
@@ -49,10 +50,10 @@ struct SortedEntry {
 @group(0) @binding(3) var<storage, read>       cell_offsets:   array<u32>;
 @group(0) @binding(4) var<storage, read>       sorted_entries: array<SortedEntry>;
 
-const TILE: u32 = 64u;
+override TILE: u32 = 64u;
 
-// 64 x 16 B = 1 KB of LDS; plus 12 B for the reference cell and divergence flag.
-var<workgroup> tile:        array<SortedEntry, 64>;
+// TILE × 16 B of LDS; plus 12 B for the reference cell and divergence flag.
+var<workgroup> tile:        array<SortedEntry, TILE>;
 var<workgroup> ws_ref_gx:   u32;
 var<workgroup> ws_ref_gy:   u32;
 var<workgroup> ws_diverged: atomic<u32>;
@@ -63,7 +64,7 @@ fn torus_delta(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return d;
 }
 
-@compute @workgroup_size(64, 1, 1)
+@compute @workgroup_size(TILE, 1, 1)
 fn cs_main(
     @builtin(global_invocation_id) gid:     vec3<u32>,
     @builtin(local_invocation_id)  lid_vec: vec3<u32>,
@@ -97,7 +98,7 @@ fn cs_main(
     let gx_i   = i32(min(u32(subj.position.x * f32(grid_w)), grid_w - 1u));
     let gy_i   = i32(min(u32(subj.position.y * f32(grid_w)), grid_w - 1u));
 
-    // Homogeneity check — all 64 threads participate to keep barriers uniform.
+    // Homogeneity check — all TILE threads participate to keep barriers uniform.
     // sorted_entries is cell-sorted, so a workgroup processing particles from a single
     // hot cell (as in Ecosystem clusters) will pass this check.  Boundary workgroups
     // spanning two cells fall back to the scalar path.
@@ -114,7 +115,7 @@ fn cs_main(
     let homogeneous = atomicLoad(&ws_diverged) == 0u;
 
     if homogeneous {
-        // TILE PATH — all 64 threads share the same 21-cell neighborhood.
+        // TILE PATH — all TILE threads share the same 21-cell neighborhood.
         // Cooperatively load each neighbor cell into LDS in rounds of TILE entries,
         // then all threads compute forces against the tile.
         // start/end/j are uniform across threads, so while/workgroupBarrier are uniform.

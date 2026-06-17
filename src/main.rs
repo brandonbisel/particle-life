@@ -9,6 +9,7 @@ mod app;
 mod benchmark;
 mod config;
 mod icon;
+mod pipeline_cache;
 mod renderer;
 mod simulation;
 mod ui;
