@@ -78,11 +78,12 @@ pub struct SimulationState {
     pub friction: f32,
     pub force_scale: f32,
     pub particle_radius: f32,  // world units
-    pub attraction: [f32; 64], // row-major 8×8; A[i,j] = attraction[i*8+j]
+    // row-major 8×8 particle-particle matrix at [0..64]; wall row at [64..72]: A[64+j] = wall→species-j.
+    pub attraction: [f32; 72],
     /// Per-species colours as packed sRGB `0xFF_BB_GG_RR` u32s.
     pub palette: [u32; 8],
     pub paused: bool,
-    pub border_mode: u32, // 0 = Wrap, 1 = Repel, 2 = Static
+    pub border_mode: u32, // 0 = Wrap, 1 = Repel, 2 = Static, 3 = Matrix
     pub border_repel_strength: f32,
     /// World dimensions in simulation units.  At the default 1280×720 these equal pixel
     /// counts; at other sizes only the aspect ratio and ratio to [`BASE_WORLD_HEIGHT`]
@@ -267,7 +268,7 @@ impl SimulationState {
 
         let attraction_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Attraction Matrix"),
-            size: (MAX_SPECIES * MAX_SPECIES * std::mem::size_of::<f32>()) as u64,
+            size: ((MAX_SPECIES + 1) * MAX_SPECIES * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -551,7 +552,7 @@ impl SimulationState {
 
         // ── Initial state ────────────────────────────────────────────────────
         let mut rng = Rng::new();
-        let mut attraction = [0.0f32; 64];
+        let mut attraction = [0.0f32; 72];
         seed_attraction_biased(&mut rng, &mut attraction, species_count);
 
         let mut sim = Self {
@@ -834,8 +835,8 @@ impl SimulationState {
             self.perf_target_fps = fps;
         }
 
-        // Copy compact n×n matrix into the full 8×8 layout.
-        self.attraction = [0.0f32; 64];
+        // Copy compact n×n matrix into the full 8×8 layout; wall row at [64..72].
+        self.attraction = [0.0f32; 72];
         let n = self.species_count;
         let pn = preset.species_count.min(MAX_SPECIES);
         for i in 0..n.min(pn) {
@@ -843,6 +844,15 @@ impl SimulationState {
                 if let Some(&v) = preset.attraction.get(i * pn + j) {
                     self.attraction[i * MAX_SPECIES + j] = v;
                 }
+            }
+        }
+        if let Some(ref wa) = preset.wall_attraction {
+            for (s, &v) in wa.iter().enumerate().take(MAX_SPECIES) {
+                self.attraction[64 + s] = v;
+            }
+        } else if self.border_mode == 3 {
+            for j in 0..self.species_count {
+                self.attraction[64 + j] = self.rng.range(-1.0, 1.0);
             }
         }
         self.attraction_dirty.set(true);
@@ -892,6 +902,10 @@ impl SimulationState {
                 None
             },
             attraction,
+            wall_attraction: {
+                let wa: Vec<f32> = self.attraction[64..72].to_vec();
+                if wa.iter().all(|&v| v == 0.0) { None } else { Some(wa) }
+            },
             palette: Some(self.palette.to_vec()),
         }
     }
@@ -906,8 +920,20 @@ impl SimulationState {
     }
 
     /// Fill the active sub-matrix: positive self-attraction on diagonal, random off-diagonal.
+    /// In Matrix border mode the wall row is also randomized.
     pub fn randomize_attraction(&mut self) {
         seed_attraction_biased(&mut self.rng, &mut self.attraction, self.species_count);
+        if self.border_mode == 3 {
+            self.randomize_wall_row();
+        }
+        self.attraction_dirty.set(true);
+    }
+
+    /// Fill the wall row (indices 64..64+species_count) with random values in [-1, 1].
+    pub fn randomize_wall_row(&mut self) {
+        for j in 0..self.species_count {
+            self.attraction[64 + j] = self.rng.range(-1.0, 1.0);
+        }
         self.attraction_dirty.set(true);
     }
 
@@ -978,7 +1004,7 @@ fn hsv_to_packed_srgb(h: f32, s: f32, v: f32) -> u32 {
     0xFF00_0000 | (to_u8(b) << 16) | (to_u8(g) << 8) | to_u8(r)
 }
 
-fn seed_attraction_biased(rng: &mut Rng, attraction: &mut [f32; 64], species_count: usize) {
+fn seed_attraction_biased(rng: &mut Rng, attraction: &mut [f32; 72], species_count: usize) {
     for i in 0..species_count {
         for j in 0..species_count {
             attraction[i * MAX_SPECIES + j] = rng.range(-1.0, 1.0);

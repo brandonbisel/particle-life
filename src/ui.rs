@@ -819,14 +819,22 @@ pub fn draw_ui(
                     .on_hover_text("Repel — particles are pushed back from the world boundary");
                 ui.radio_value(&mut sim.border_mode, 2u32, "Static")
                     .on_hover_text("Static — particles stop at the world boundary (hard wall)");
+                if ui
+                    .radio_value(&mut sim.border_mode, 3u32, "Matrix")
+                    .on_hover_text("Matrix — per-species wall force set in the Attraction Matrix below")
+                    .clicked()
+                {
+                    sim.randomize_wall_row();
+                }
             });
-            if sim.border_mode == 1 {
+            if sim.border_mode == 1 || sim.border_mode == 3 {
+                let label = if sim.border_mode == 3 { "Wall Force" } else { "Repel Force" };
                 ui.add(
                     egui::Slider::new(&mut sim.border_repel_strength, 0.1..=30.0)
-                        .text("Repel Force")
+                        .text(label)
                         .step_by(0.1),
                 )
-                .on_hover_text("Strength of the boundary repulsion spring");
+                .on_hover_text("Global scale for boundary spring force");
             }
 
             ui.separator();
@@ -1110,6 +1118,30 @@ pub fn draw_ui(
                                                 )
                                                 .range(-1.0_f32..=1.0_f32)
                                                 .speed(0.01),
+                                            );
+                                            if resp.changed() {
+                                                sim.mark_attraction_dirty();
+                                            }
+                                        });
+                                }
+                                ui.end_row();
+                            }
+
+                            // Wall row: only visible in Matrix border mode.
+                            if sim.border_mode == 3 {
+                                ui.colored_label(egui::Color32::GRAY, "Wall");
+                                for j in 0..n {
+                                    let bg = attraction_cell_color(sim.attraction[64 + j]);
+                                    egui::Frame::new()
+                                        .fill(bg)
+                                        .inner_margin(egui::Margin::same(2))
+                                        .show(ui, |ui| {
+                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
+                                                egui::Color32::TRANSPARENT;
+                                            let resp = ui.add(
+                                                egui::DragValue::new(&mut sim.attraction[64 + j])
+                                                    .range(-1.0_f32..=1.0_f32)
+                                                    .speed(0.01),
                                             );
                                             if resp.changed() {
                                                 sim.mark_attraction_dirty();

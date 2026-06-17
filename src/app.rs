@@ -835,7 +835,7 @@ impl ApplicationHandler for AppHandler {
                     match config::decode_matrix(&code) {
                         Ok((n, matrix)) => {
                             state.sim.species_count = n;
-                            state.sim.attraction = [0.0f32; 64];
+                            state.sim.attraction = [0.0f32; 72];
                             for i in 0..n {
                                 for j in 0..n {
                                     state.sim.attraction[i * crate::simulation::MAX_SPECIES + j] =

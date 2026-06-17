@@ -129,6 +129,10 @@ pub struct Preset {
     pub perf_target_fps: Option<f32>,
     /// Row-major `species_count × species_count` attraction matrix; values in `[-1, 1]`.
     pub attraction: Vec<f32>,
+    /// Wall attraction row for border mode 3 (Matrix); one value per species in `[-1, 1]`.
+    /// Positive → repulsion from walls; negative → attraction. Absent means all zeros.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_attraction: Option<Vec<f32>>,
     /// Per-species packed sRGB colours (`0xFF_BB_GG_RR`). Optional; absent means use default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub palette: Option<Vec<u32>>,
@@ -155,6 +159,7 @@ impl Preset {
             perf_auto: false,
             perf_target_fps: None,
             attraction,
+            wall_attraction: None,
             palette: None,
         }
     }
@@ -324,7 +329,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 ///
 /// Format: 1 byte `species_count`, then `n*n` bytes where each byte is the
 /// attraction value quantised from `[-1.0, 1.0]` to `i8` `[-127, 127]`.
-pub fn encode_matrix(species: usize, attraction: &[f32; 64]) -> String {
+pub fn encode_matrix(species: usize, attraction: &[f32; 72]) -> String {
     let mut bytes = Vec::with_capacity(1 + species * species);
     bytes.push(species as u8);
     for i in 0..species {

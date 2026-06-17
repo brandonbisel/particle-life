@@ -46,7 +46,7 @@ struct SortedEntry {
 
 @group(0) @binding(0) var<storage, read_write> particles:      array<Particle>;
 @group(0) @binding(1) var<uniform>             params:         SimParams;
-@group(0) @binding(2) var<storage, read>       attraction:     array<f32, 64>;
+@group(0) @binding(2) var<storage, read>       attraction:     array<f32, 72>;
 @group(0) @binding(3) var<storage, read>       cell_offsets:   array<u32>;
 @group(0) @binding(4) var<storage, read>       sorted_entries: array<SortedEntry>;
 
@@ -260,6 +260,31 @@ fn cs_main(
         }
     }
 
+    // Border matrix force (mode 3): per-species wall attraction, same spring profile as mode 1.
+    // wall_a > 0 → repulsion; wall_a < 0 → attraction; wall_a = 0 → hard clamp only.
+    if params.border_mode == 3u {
+        let wall_a   = attraction[8u * 8u + subj.species];
+        let s        = params.border_repel_strength * params.dt * wall_a;
+        let brange_y = r_max;
+        let brange_x = r_max / aspect;
+        if subj.position.x < brange_x {
+            let t = 1.0 - subj.position.x / brange_x;
+            vel.x += t * t * s;
+        }
+        if subj.position.x > 1.0 - brange_x {
+            let t = 1.0 - (1.0 - subj.position.x) / brange_x;
+            vel.x -= t * t * s;
+        }
+        if subj.position.y < brange_y {
+            let t = 1.0 - subj.position.y / brange_y;
+            vel.y += t * t * s;
+        }
+        if subj.position.y > 1.0 - brange_y {
+            let t = 1.0 - (1.0 - subj.position.y) / brange_y;
+            vel.y -= t * t * s;
+        }
+    }
+
     // CFL guard.
     let max_speed = params.r_max / params.dt * 0.25;
     let spd = length(vel);
@@ -270,8 +295,8 @@ fn cs_main(
     if params.border_mode == 0u {
         // Wrap: torus topology.
         pos = fract(pos + vec2<f32>(1.0, 1.0));
-    } else if params.border_mode == 1u {
-        // Repel: spring force already applied; just clamp against tunneling.
+    } else if params.border_mode == 1u || params.border_mode == 3u {
+        // Repel/Matrix: spring force already applied; just clamp against tunneling.
         pos = clamp(pos, vec2<f32>(0.0), vec2<f32>(1.0));
     } else {
         // Static: hard wall — clamp and zero the outward velocity component.

@@ -19,6 +19,7 @@ Thumbs.db
 
 # App-generated runtime files
 session.toml
+appearance.toml
 /presets/
 /screenshots/
 
