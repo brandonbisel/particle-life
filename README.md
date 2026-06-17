@@ -91,9 +91,29 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `pollster`                           | 0.3     | Block on async wgpu initialization           |
 | `serde` + `toml`                     | 1 / 0.8 | Preset serialisation                         |
 | `base64`                             | 0.22    | Matrix share-code encoding                   |
+| `clap`                               | 4       | Command-line argument parsing (MIT / Apache-2.0) |
 | `rfd`                                | 0.15    | Native file dialogs for import/export        |
 | `png`                                | 0.17    | PNG encoding for screenshots and thumbnails  |
 | `log` + `env_logger`                 | 0.4 / 0.11 | Structured logging (adapter selection, warnings) |
+
+## Command-Line Options
+
+```
+Usage: ParticleLife [OPTIONS]
+
+Options:
+      --bench                      Run full benchmark suite and write CSV, then exit
+      --capacity-bench             Run capacity benchmark and write CSV, then exit
+      --bench-output <FILE>        CSV output path (default: bench_results.csv / capacity_results.csv)
+      --preset <NAME_OR_INDEX>     Apply preset on launch (name or 0-based index)
+      --fullscreen                 Open in borderless fullscreen on launch
+      --world-size <WxH>           Set world size, e.g. 1920x1080
+      --particles <N>              Set particle count (clamped to 100–2 000 000)
+      --matrix <CODE>              Apply attraction matrix share code on launch
+  -h, --help                       Print help
+```
+
+All flags are optional and compose freely. When `--preset` and individual overrides (`--world-size`, `--particles`, `--matrix`) are combined, the preset is applied first and the overrides take precedence. Benchmark flags (`--bench`, `--capacity-bench`) ignore most sim settings because the benchmark runner cycles through its own fixed preset+tier combinations.
 
 ## Controls
 
@@ -134,7 +154,8 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 
 ```
 src/
-  main.rs              — Entry point; EventLoop + ControlFlow::Poll
+  main.rs              — Entry point; parses CLI args, creates EventLoop + ControlFlow::Poll
+  cli.rs               — CLI argument definitions (clap derive)
   app.rs               — ApplicationHandler; owns window, renderer, sim, egui state, camera
   renderer.rs          — wgpu device/surface/pipeline; render() drives one frame
   simulation.rs        — SimulationState; GPU buffers, 6-pass dispatch, spawn, preset apply

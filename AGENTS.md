@@ -51,6 +51,7 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 - `wgpu = "24"` — egui-wgpu 0.31 pins to `^24`; wgpu 25 is a breaking change for the egui integration
 - `egui`, `egui-winit`, `egui-wgpu` must all be the same minor version (currently `0.31`)
 - `winit = "0.30"` — uses the `ApplicationHandler` trait API introduced in 0.30; prior versions use a different event loop pattern
+- `clap = "4"` — CLI argument parsing; licensed MIT OR Apache-2.0. Used with the `derive` feature for `CliArgs` in `cli.rs`.
 
 ## Architecture
 
@@ -58,7 +59,8 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 
 | Module | Role |
 |--------|------|
-| `main.rs` | Entry point; creates `EventLoop` with `ControlFlow::Poll` |
+| `main.rs` | Entry point; parses CLI args (`cli::CliArgs::parse()`), creates `EventLoop` with `ControlFlow::Poll` |
+| `cli.rs` | `CliArgs` struct (clap derive); all command-line flags and their `value_parser` helpers |
 | `app.rs` | `AppHandler` / `AppState`; event routing, camera, per-frame orchestration |
 | `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
 | `simulation.rs` | `SimulationState`; GPU buffers, 6-pass compute dispatch, preset apply, spawn |

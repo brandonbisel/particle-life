@@ -18,7 +18,7 @@ use winit::{
 };
 
 use crate::{
-    benchmark, config, icon, renderer, renderer::WgpuState, simulation::SimulationState, ui,
+    benchmark, cli, config, icon, renderer, renderer::WgpuState, simulation::SimulationState, ui,
 };
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -81,9 +81,21 @@ fn apply_zoom(cam: &mut Camera, cursor_world: [f32; 2], factor: f32) {
 /// Holds [`AppState`] behind an `Option` because the state cannot be created
 /// until the first [`resumed`](ApplicationHandler::resumed) event (required by
 /// Wayland, which only provides a valid window handle after that point).
-#[derive(Default)]
 pub struct AppHandler {
     state: Option<AppState>,
+    cli: cli::CliArgs,
+}
+
+impl AppHandler {
+    pub fn new(cli: cli::CliArgs) -> Self {
+        Self { state: None, cli }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutoBenchKind {
+    Full,
+    Capacity,
 }
 
 struct AppState {
@@ -124,6 +136,9 @@ struct AppState {
     vsync: bool,
     // True while auto-performance is forcing vsync off; restored to `vsync` on exit.
     vsync_override: bool,
+    // Set when launched with --bench or --capacity-bench; triggers auto-save + exit on Done.
+    auto_bench: Option<AutoBenchKind>,
+    bench_output: Option<std::path::PathBuf>,
 
     // Appearance
     appearance: config::AppearanceConfig,
@@ -184,6 +199,9 @@ impl ApplicationHandler for AppHandler {
 
         // X11 / XWayland: sets _NET_WM_ICON on the window directly.
         window.set_window_icon(Some(icon::app_icon()));
+        if self.cli.fullscreen {
+            window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
 
         let renderer = WgpuState::new(Arc::clone(&window));
         let size = window.inner_size();
@@ -214,8 +232,52 @@ impl ApplicationHandler for AppHandler {
         if let Some(ref p) = session {
             sim.apply_preset(renderer.queue(), p);
         }
+
+        // CLI overrides (applied after session restore; later flags override earlier ones)
+        if let Some(ref name) = self.cli.preset {
+            let idx = name
+                .parse::<usize>()
+                .ok()
+                .filter(|&i| i < preset_library.len())
+                .or_else(|| {
+                    preset_library
+                        .iter()
+                        .position(|p| p.name.eq_ignore_ascii_case(name))
+                });
+            if let Some(i) = idx {
+                sim.apply_preset(renderer.queue(), &preset_library[i]);
+            } else {
+                log::warn!("--preset {name:?}: no matching preset found");
+            }
+        }
+        if let Some((w, h)) = self.cli.world_size {
+            sim.world_width = w as f32;
+            sim.world_height = h as f32;
+            sim.respawn(renderer.queue());
+        }
+        if let Some(n) = self.cli.particles {
+            sim.particle_count = n.clamp(100, crate::simulation::MAX_PARTICLES);
+            sim.respawn(renderer.queue());
+        }
+        if let Some(ref code) = self.cli.matrix.clone() {
+            match config::decode_matrix(code) {
+                Ok((n, matrix)) => {
+                    sim.species_count = n;
+                    sim.attraction = [0.0f32; 272];
+                    for i in 0..n {
+                        for j in 0..n {
+                            sim.attraction[i * crate::simulation::MAX_SPECIES + j] =
+                                matrix[i * n + j];
+                        }
+                    }
+                    sim.mark_attraction_dirty();
+                    sim.respawn(renderer.queue());
+                }
+                Err(e) => log::warn!("--matrix: {e}"),
+            }
+        }
         renderer.update_palette(&sim.palette);
-        let fit_zoom = compute_fit_zoom(world_width, world_height, size.width, size.height);
+        let fit_zoom = compute_fit_zoom(sim.world_width, sim.world_height, size.width, size.height);
         let per_species_count = sim.species_counts();
 
         let egui_ctx = egui::Context::default();
@@ -263,6 +325,8 @@ impl ApplicationHandler for AppHandler {
             capacity_bench: benchmark::CapacityBench::new(),
             vsync: true,
             vsync_override: false,
+            auto_bench: None,
+            bench_output: None,
             appearance,
             os_dark,
             matrix_popped_out: false,
@@ -282,6 +346,40 @@ impl ApplicationHandler for AppHandler {
             pan_start_center: [0.5, 0.5],
             window,
         });
+
+        // Auto-benchmark mode: start immediately and exit when done.
+        if self.cli.bench || self.cli.capacity_bench {
+            let state = self.state.as_mut().unwrap();
+            state.renderer.set_vsync(false);
+            let sz = state.window.inner_size();
+            if self.cli.bench {
+                let action = state.benchmark.start(sz.width, sz.height);
+                Self::handle_benchmark_action(
+                    &mut state.sim,
+                    &state.renderer,
+                    action,
+                    &state.benchmark,
+                );
+                state.auto_bench = Some(AutoBenchKind::Full);
+                state.bench_output = Some(
+                    self.cli
+                        .bench_output
+                        .clone()
+                        .unwrap_or_else(|| "bench_results.csv".into()),
+                );
+            } else {
+                let action = state.capacity_bench.start(sz.width, sz.height);
+                state.frame_times.clear();
+                Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
+                state.auto_bench = Some(AutoBenchKind::Capacity);
+                state.bench_output = Some(
+                    self.cli
+                        .bench_output
+                        .clone()
+                        .unwrap_or_else(|| "capacity_results.csv".into()),
+                );
+            }
+        }
     }
 
     fn window_event(
@@ -951,6 +1049,18 @@ impl ApplicationHandler for AppHandler {
                     let action = state.benchmark.advance(raw_dt);
                     if matches!(action, benchmark::BenchmarkAction::Done) {
                         state.renderer.set_vsync(state.vsync);
+                        if state.auto_bench == Some(AutoBenchKind::Full) {
+                            let path = state
+                                .bench_output
+                                .take()
+                                .unwrap_or_else(|| "bench_results.csv".into());
+                            match state.benchmark.write_csv(&path) {
+                                Ok(()) => println!("Benchmark results written to {}", path.display()),
+                                Err(e) => log::error!("Benchmark CSV write failed: {e}"),
+                            }
+                            event_loop.exit();
+                            return;
+                        }
                     }
                     Self::handle_benchmark_action(
                         &mut state.sim,
@@ -991,6 +1101,20 @@ impl ApplicationHandler for AppHandler {
                     let action = state.capacity_bench.advance(raw_dt);
                     if matches!(action, benchmark::CapacityAction::Done) {
                         state.renderer.set_vsync(state.vsync);
+                        if state.auto_bench == Some(AutoBenchKind::Capacity) {
+                            let path = state
+                                .bench_output
+                                .take()
+                                .unwrap_or_else(|| "capacity_results.csv".into());
+                            match state.capacity_bench.write_csv(&path) {
+                                Ok(()) => {
+                                    println!("Capacity results written to {}", path.display())
+                                }
+                                Err(e) => log::error!("Capacity benchmark CSV write failed: {e}"),
+                            }
+                            event_loop.exit();
+                            return;
+                        }
                     }
                     if matches!(action, benchmark::CapacityAction::LoadPreset { .. }) {
                         state.frame_times.clear();
