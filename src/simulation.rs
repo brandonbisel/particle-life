@@ -126,7 +126,7 @@ pub struct SimulationState {
     #[allow(dead_code)]
     cell_offsets_buf: wgpu::Buffer, // exclusive prefix sum; MAX_GRID_CELLS+1 entries
     #[allow(dead_code)]
-    block_sums_buf: wgpu::Buffer,   // per-block totals for parallel prefix; MAX_PREFIX_BLOCKS entries
+    block_sums_buf: wgpu::Buffer, // per-block totals for parallel prefix; MAX_PREFIX_BLOCKS entries
     #[allow(dead_code)]
     sorted_entries_buf: wgpu::Buffer, // position+species+index in cell-sorted order
 
@@ -420,10 +420,22 @@ impl SimulationState {
             label: Some("Prefix A BG"),
             layout: &prefix_a_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: cell_counts_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: cell_offsets_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: block_sums_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cell_counts_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: cell_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: block_sums_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -431,8 +443,14 @@ impl SimulationState {
             label: Some("Prefix B BG"),
             layout: &prefix_b_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: block_sums_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: block_sums_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -440,9 +458,18 @@ impl SimulationState {
             label: Some("Prefix C BG"),
             layout: &prefix_c_bgl,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: cell_offsets_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: block_sums_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: cell_offsets_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: block_sums_buf.as_entire_binding(),
+                },
             ],
         });
 
