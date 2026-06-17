@@ -46,11 +46,12 @@ struct SortedEntry {
 
 @group(0) @binding(0) var<storage, read_write> particles:      array<Particle>;
 @group(0) @binding(1) var<uniform>             params:         SimParams;
-@group(0) @binding(2) var<storage, read>       attraction:     array<f32, 72>;
+@group(0) @binding(2) var<storage, read>       attraction:     array<f32>;
 @group(0) @binding(3) var<storage, read>       cell_offsets:   array<u32>;
 @group(0) @binding(4) var<storage, read>       sorted_entries: array<SortedEntry>;
 
 override TILE: u32 = 64u;
+override MAX_SPECIES: u32 = 16u;
 
 // TILE × 16 B of LDS; plus 12 B for the reference cell and divergence flag.
 var<workgroup> tile:        array<SortedEntry, TILE>;
@@ -154,7 +155,7 @@ fn cs_main(
 
                             if dist_sq > 1e-8 && dist_sq < r_max_sq {
                                 let inv_dist = inverseSqrt(dist_sq);
-                                let a        = attraction[subj.species * 8u + entry.species];
+                                let a        = attraction[subj.species * params.n_species + entry.species];
 
                                 // rep:  delta × (inv_r_min − inv_dist)
                                 // int:  delta × a × (inv_dist − |2 − r_sum·inv_dist| × inv_r_range)
@@ -198,7 +199,7 @@ fn cs_main(
 
                         if dist_sq > 1e-8 && dist_sq < r_max_sq {
                             let inv_dist = inverseSqrt(dist_sq);
-                            let a        = attraction[subj.species * 8u + entry.species];
+                            let a        = attraction[subj.species * params.n_species + entry.species];
 
                             let rep_f    = inv_r_min - inv_dist;
                             let int_f    = a * (inv_dist - abs(2.0 - r_sum * inv_dist) * inv_r_range);
@@ -263,7 +264,7 @@ fn cs_main(
     // Border matrix force (mode 3): per-species wall attraction, same spring profile as mode 1.
     // wall_a > 0 → repulsion; wall_a < 0 → attraction; wall_a = 0 → hard clamp only.
     if params.border_mode == 3u {
-        let wall_a   = attraction[8u * 8u + subj.species];
+        let wall_a   = attraction[MAX_SPECIES * MAX_SPECIES + subj.species];
         let s        = params.border_repel_strength * params.dt * wall_a;
         let brange_y = r_max;
         let brange_x = r_max / aspect;

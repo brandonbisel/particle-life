@@ -9,7 +9,7 @@ use std::sync::Arc;
 use winit::window::Window;
 
 use crate::pipeline_cache;
-use crate::simulation::{Particle, SimulationState};
+use crate::simulation::{MAX_SPECIES, Particle, SimulationState};
 
 /// Convert an sRGB byte triplet to a wgpu linear-light `Color` suitable for use as a
 /// render-pass clear value.
@@ -151,10 +151,10 @@ impl WgpuState {
             mapped_at_creation: false,
         });
 
-        // 8 × vec4<f32> = 128 bytes; holds pre-linearised palette colours for the vertex shader.
+        // MAX_SPECIES × vec4<f32>; holds pre-linearised palette colours for the vertex shader.
         let palette_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Palette"),
-            size: 128,
+            size: (MAX_SPECIES * 16) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -284,20 +284,22 @@ impl WgpuState {
         state
     }
 
-    /// Convert the 8-entry sRGB palette to linear floats and upload to the vertex shader.
+    /// Convert the sRGB palette to linear floats and upload to the vertex shader.
     ///
     /// Doing the sRGB→linear conversion here (once, on the CPU) avoids three `pow()` calls
     /// per vertex in the shader, which measurably hurts throughput at CPU-bound particle counts.
-    pub fn update_palette(&self, palette: &[u32; 8]) {
-        let linear: [[f32; 4]; 8] = std::array::from_fn(|i| {
-            let p = palette[i];
-            [
-                srgb_u8_to_linear((p & 0xFF) as u8),
-                srgb_u8_to_linear(((p >> 8) & 0xFF) as u8),
-                srgb_u8_to_linear(((p >> 16) & 0xFF) as u8),
-                1.0,
-            ]
-        });
+    pub fn update_palette(&self, palette: &[u32]) {
+        let linear: Vec<[f32; 4]> = palette
+            .iter()
+            .map(|&p| {
+                [
+                    srgb_u8_to_linear((p & 0xFF) as u8),
+                    srgb_u8_to_linear(((p >> 8) & 0xFF) as u8),
+                    srgb_u8_to_linear(((p >> 16) & 0xFF) as u8),
+                    1.0,
+                ]
+            })
+            .collect();
         self.queue
             .write_buffer(&self.palette_buf, 0, bytemuck::cast_slice(&linear));
     }

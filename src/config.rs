@@ -329,7 +329,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 ///
 /// Format: 1 byte `species_count`, then `n*n` bytes where each byte is the
 /// attraction value quantised from `[-1.0, 1.0]` to `i8` `[-127, 127]`.
-pub fn encode_matrix(species: usize, attraction: &[f32; 72]) -> String {
+pub fn encode_matrix(species: usize, attraction: &[f32; 272]) -> String {
     let mut bytes = Vec::with_capacity(1 + species * species);
     bytes.push(species as u8);
     for i in 0..species {
@@ -393,10 +393,11 @@ mod tests {
             p.name
         );
         assert!(
-            p.species_count >= 1 && p.species_count <= 8,
-            "{}: species_count {} out of range [1, 8]",
+            p.species_count >= 1 && p.species_count <= crate::simulation::MAX_SPECIES,
+            "{}: species_count {} out of range [1, {}]",
             p.name,
-            p.species_count
+            p.species_count,
+            crate::simulation::MAX_SPECIES
         );
         assert_eq!(
             p.attraction.len(),

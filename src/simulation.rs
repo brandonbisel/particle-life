@@ -9,7 +9,7 @@
 //! 6. **Force**    — 21-cell neighborhood; LDS tile for homogeneous workgroups; `inverseSqrt`-based force.
 
 /// Maximum number of species supported by the attraction matrix and PALETTE.
-pub const MAX_SPECIES: usize = 8;
+pub const MAX_SPECIES: usize = 16;
 /// Hard cap on the GPU particle buffer. Raising it increases VRAM by ~24 bytes/particle.
 pub const MAX_PARTICLES: usize = 2_000_000;
 // cell = r_max_norm/2, so grid_w = floor(2/r_max_norm).
@@ -33,15 +33,23 @@ pub const BASE_WORLD_HEIGHT: f32 = 720.0;
 /// so the vertex shader can do a single sRGB→linear conversion and the GPU's
 /// automatic linear→sRGB encoding on the sRGB framebuffer produces the
 /// correct final colour.
-pub const PALETTE_DEFAULT: [u32; 8] = [
-    0xFF8585EF, // salmon-red   sRGB(239, 133, 133)
-    0xFF85EF85, // light-green  sRGB(133, 239, 133)
-    0xFFEF9885, // periwinkle   sRGB(133, 152, 239)
-    0xFF7AE5EF, // pale-yellow  sRGB(239, 229, 122)
-    0xFFEF7AD0, // lavender     sRGB(208, 122, 239)
-    0xFFEAEA7A, // pale-cyan    sRGB(122, 234, 234)
-    0xFF7ABDF4, // peach        sRGB(244, 189, 122)
-    0xFFDBA8F4, // rose-pink    sRGB(244, 168, 219)
+pub const PALETTE_DEFAULT: [u32; 16] = [
+    0xFF8585EF, // salmon-red    sRGB(239, 133, 133)
+    0xFF85EF85, // light-green   sRGB(133, 239, 133)
+    0xFFEF9885, // periwinkle    sRGB(133, 152, 239)
+    0xFF7AE5EF, // pale-yellow   sRGB(239, 229, 122)
+    0xFFEF7AD0, // lavender      sRGB(208, 122, 239)
+    0xFFEAEA7A, // pale-cyan     sRGB(122, 234, 234)
+    0xFF7ABDF4, // peach         sRGB(244, 189, 122)
+    0xFFDBA8F4, // rose-pink     sRGB(244, 168, 219)
+    0xFF85C4F4, // warm-gold     sRGB(244, 196, 133)
+    0xFFABEF85, // spring-green  sRGB(133, 239, 171)
+    0xFF85EFCF, // aquamarine    sRGB(207, 239, 133)
+    0xFFEFD485, // wheat         sRGB(133, 212, 239)
+    0xFFD485EF, // orchid        sRGB(239, 133, 212)
+    0xFF85B8EF, // sky-blue      sRGB(239, 184, 133)
+    0xFFEF8585, // coral         sRGB(133, 133, 239)
+    0xFFB8F485, // yellow-green  sRGB(133, 244, 184)
 ];
 
 #[repr(C)]
@@ -77,11 +85,11 @@ pub struct SimulationState {
     pub r_max: f32,
     pub friction: f32,
     pub force_scale: f32,
-    pub particle_radius: f32,  // world units
-    // row-major 8×8 particle-particle matrix at [0..64]; wall row at [64..72]: A[64+j] = wall→species-j.
-    pub attraction: [f32; 72],
+    pub particle_radius: f32, // world units
+    // row-major 16×16 particle-particle matrix at [0..256]; wall row at [256..272]: A[256+j] = wall→species-j.
+    pub attraction: [f32; 272],
     /// Per-species colours as packed sRGB `0xFF_BB_GG_RR` u32s.
-    pub palette: [u32; 8],
+    pub palette: [u32; 16],
     pub paused: bool,
     pub border_mode: u32, // 0 = Wrap, 1 = Repel, 2 = Static, 3 = Matrix
     pub border_repel_strength: f32,
@@ -365,10 +373,12 @@ impl SimulationState {
         // ── Pipelines ────────────────────────────────────────────────────────
         let no_constants = std::collections::HashMap::new();
         // TILE override: AMD uses 64 (one full wavefront); all others use 32.
-        let force_constants: std::collections::HashMap<String, f64> =
-            [("TILE".to_string(), tile_size as f64)]
-                .into_iter()
-                .collect();
+        let force_constants: std::collections::HashMap<String, f64> = [
+            ("TILE".to_string(), tile_size as f64),
+            ("MAX_SPECIES".to_string(), MAX_SPECIES as f64),
+        ]
+        .into_iter()
+        .collect();
 
         let count_pipeline = make_compute_pipeline(
             device,
@@ -552,7 +562,7 @@ impl SimulationState {
 
         // ── Initial state ────────────────────────────────────────────────────
         let mut rng = Rng::new();
-        let mut attraction = [0.0f32; 72];
+        let mut attraction = [0.0f32; 272];
         seed_attraction_biased(&mut rng, &mut attraction, species_count);
 
         let mut sim = Self {
@@ -835,8 +845,8 @@ impl SimulationState {
             self.perf_target_fps = fps;
         }
 
-        // Copy compact n×n matrix into the full 8×8 layout; wall row at [64..72].
-        self.attraction = [0.0f32; 72];
+        // Copy compact n×n matrix into the full 16×16 layout; wall row at [256..272].
+        self.attraction = [0.0f32; 272];
         let n = self.species_count;
         let pn = preset.species_count.min(MAX_SPECIES);
         for i in 0..n.min(pn) {
@@ -848,11 +858,11 @@ impl SimulationState {
         }
         if let Some(ref wa) = preset.wall_attraction {
             for (s, &v) in wa.iter().enumerate().take(MAX_SPECIES) {
-                self.attraction[64 + s] = v;
+                self.attraction[MAX_SPECIES * MAX_SPECIES + s] = v;
             }
         } else if self.border_mode == 3 {
             for j in 0..self.species_count {
-                self.attraction[64 + j] = self.rng.range(-1.0, 1.0);
+                self.attraction[MAX_SPECIES * MAX_SPECIES + j] = self.rng.range(-1.0, 1.0);
             }
         }
         self.attraction_dirty.set(true);
@@ -903,8 +913,14 @@ impl SimulationState {
             },
             attraction,
             wall_attraction: {
-                let wa: Vec<f32> = self.attraction[64..72].to_vec();
-                if wa.iter().all(|&v| v == 0.0) { None } else { Some(wa) }
+                let wa: Vec<f32> = self.attraction
+                    [MAX_SPECIES * MAX_SPECIES..MAX_SPECIES * MAX_SPECIES + MAX_SPECIES]
+                    .to_vec();
+                if wa.iter().all(|&v| v == 0.0) {
+                    None
+                } else {
+                    Some(wa)
+                }
             },
             palette: Some(self.palette.to_vec()),
         }
@@ -929,10 +945,10 @@ impl SimulationState {
         self.attraction_dirty.set(true);
     }
 
-    /// Fill the wall row (indices 64..64+species_count) with random values in [-1, 1].
+    /// Fill the wall row with random values in [-1, 1].
     pub fn randomize_wall_row(&mut self) {
         for j in 0..self.species_count {
-            self.attraction[64 + j] = self.rng.range(-1.0, 1.0);
+            self.attraction[MAX_SPECIES * MAX_SPECIES + j] = self.rng.range(-1.0, 1.0);
         }
         self.attraction_dirty.set(true);
     }
@@ -1004,7 +1020,7 @@ fn hsv_to_packed_srgb(h: f32, s: f32, v: f32) -> u32 {
     0xFF00_0000 | (to_u8(b) << 16) | (to_u8(g) << 8) | to_u8(r)
 }
 
-fn seed_attraction_biased(rng: &mut Rng, attraction: &mut [f32; 72], species_count: usize) {
+fn seed_attraction_biased(rng: &mut Rng, attraction: &mut [f32; 272], species_count: usize) {
     for i in 0..species_count {
         for j in 0..species_count {
             attraction[i * MAX_SPECIES + j] = rng.range(-1.0, 1.0);

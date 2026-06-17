@@ -297,7 +297,7 @@ pub fn draw_tool_options(
     spawn_species: &mut Option<usize>,
     spawn_rate: &mut u32,
     n_species: usize,
-    palette: &[u32; 8],
+    palette: &[u32],
 ) {
     if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
         return;
@@ -494,52 +494,84 @@ fn attraction_cell_color(v: f32) -> egui::Color32 {
 }
 
 /// Vivid palette — saturated primary hues (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_VIVID: [u32; 8] = [
-    0xFF3232DC, // red    (220, 50, 50)
-    0xFF32DC32, // green  (50, 220, 50)
-    0xFFDC5032, // blue   (50, 80, 220)
-    0xFF28C8DC, // yellow (220, 200, 40)
-    0xFFDC28A0, // purple (160, 40, 220)
-    0xFFD2D228, // cyan   (40, 210, 210)
-    0xFF1E82DC, // orange (220, 130, 30)
-    0xFFB446DC, // pink   (220, 70, 180)
+pub const PALETTE_VIVID: [u32; 16] = [
+    0xFF3232DC, // red         (220, 50, 50)
+    0xFF32DC32, // green       (50, 220, 50)
+    0xFFDC5032, // blue        (50, 80, 220)
+    0xFF28C8DC, // yellow      (220, 200, 40)
+    0xFFDC28A0, // purple      (160, 40, 220)
+    0xFFD2D228, // cyan        (40, 210, 210)
+    0xFF1E82DC, // orange      (220, 130, 30)
+    0xFFB446DC, // pink        (220, 70, 180)
+    0xFF3296DC, // teal        (220, 150, 50)
+    0xFF96DC32, // lime        (50, 220, 150)
+    0xFFDC9632, // indigo      (50, 150, 220)
+    0xFF32DCAA, // amber       (170, 220, 50)
+    0xFFDC3264, // magenta     (100, 50, 220)
+    0xFF64DC32, // mint        (50, 220, 100)
+    0xFF3264DC, // deep-orange (220, 100, 50)
+    0xFFAA32DC, // chartreuse  (220, 50, 170)
 ];
 /// Neon palette — maximum-brightness electric colours (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_NEON: [u32; 8] = [
-    0xFF1414FF, // neon-red     (255, 20, 20)
-    0xFF14FF14, // neon-green   (20, 255, 20)
-    0xFFFF7814, // neon-blue    (20, 120, 255)
-    0xFF00F0FF, // neon-yellow  (255, 240, 0)
-    0xFFF000FF, // neon-magenta (255, 0, 240)
-    0xFFFFF000, // neon-cyan    (0, 240, 255)
-    0xFF008CFF, // neon-orange  (255, 140, 0)
-    0xFF00FF96, // neon-lime    (150, 255, 0)
+pub const PALETTE_NEON: [u32; 16] = [
+    0xFF1414FF, // neon-red        (255, 20, 20)
+    0xFF14FF14, // neon-green      (20, 255, 20)
+    0xFFFF7814, // neon-blue       (20, 120, 255)
+    0xFF00F0FF, // neon-yellow     (255, 240, 0)
+    0xFFF000FF, // neon-magenta    (255, 0, 240)
+    0xFFFFF000, // neon-cyan       (0, 240, 255)
+    0xFF008CFF, // neon-orange     (255, 140, 0)
+    0xFF00FF96, // neon-lime       (150, 255, 0)
+    0xFF5050FF, // neon-rose       (255, 80, 80)
+    0xFF50FF50, // neon-spring     (80, 255, 80)
+    0xFFFF5050, // neon-azure      (80, 80, 255)
+    0xFF00AAFF, // neon-gold       (255, 170, 0)
+    0xFFAA00FF, // neon-violet     (255, 0, 170)
+    0xFFFFAA00, // neon-teal       (0, 170, 255)
+    0xFF0050FF, // neon-amber      (255, 80, 0)
+    0xFF0096FF, // neon-chartreuse (255, 150, 0)
 ];
 /// Pastel palette — soft, desaturated tints (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_PASTEL: [u32; 8] = [
-    0xFFB4B4FF, // pastel-red    (255, 180, 180)
-    0xFFB4FFB4, // pastel-green  (180, 255, 180)
-    0xFFFFC3B4, // pastel-blue   (180, 195, 255)
-    0xFFB4FAFF, // pastel-yellow (255, 250, 180)
-    0xFFFFB4E1, // pastel-purple (225, 180, 255)
-    0xFFF5F5B4, // pastel-cyan   (180, 245, 245)
-    0xFFB4DCFF, // pastel-orange (255, 220, 180)
-    0xFFE1B4F5, // pastel-pink   (245, 180, 225)
+pub const PALETTE_PASTEL: [u32; 16] = [
+    0xFFB4B4FF, // pastel-red       (255, 180, 180)
+    0xFFB4FFB4, // pastel-green     (180, 255, 180)
+    0xFFFFC3B4, // pastel-blue      (180, 195, 255)
+    0xFFB4FAFF, // pastel-yellow    (255, 250, 180)
+    0xFFFFB4E1, // pastel-purple    (225, 180, 255)
+    0xFFF5F5B4, // pastel-cyan      (180, 245, 245)
+    0xFFB4DCFF, // pastel-orange    (255, 220, 180)
+    0xFFE1B4F5, // pastel-pink      (245, 180, 225)
+    0xFFB4D4FF, // pastel-rose      (255, 212, 180)
+    0xFFD4FFB4, // pastel-mint      (180, 255, 212)
+    0xFFFFD4B4, // pastel-periwinkle(180, 212, 255)
+    0xFFB4FFE8, // pastel-lemon     (232, 255, 180)
+    0xFFFFB4C8, // pastel-lilac     (200, 180, 255)
+    0xFFE8FFB4, // pastel-seafoam   (180, 255, 232)
+    0xFFB4C8FF, // pastel-peach     (255, 200, 180)
+    0xFFC8B4FF, // pastel-butter    (255, 180, 200)
 ];
 /// Dark palette — deep, low-luminance tones (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_DARK: [u32; 8] = [
-    0xFF1E1E96, // dark-red    (150, 30, 30)
-    0xFF1E961E, // dark-green  (30, 150, 30)
-    0xFFA0321E, // dark-blue   (30, 50, 160)
-    0xFF1482A0, // dark-amber  (160, 130, 20)
-    0xFFA01464, // dark-purple (100, 20, 160)
-    0xFF828214, // dark-teal   (20, 130, 130)
-    0xFF145AA0, // dark-orange (160, 90, 20)
-    0xFF6E1E96, // dark-pink   (150, 30, 110)
+pub const PALETTE_DARK: [u32; 16] = [
+    0xFF1E1E96, // dark-red       (150, 30, 30)
+    0xFF1E961E, // dark-green     (30, 150, 30)
+    0xFFA0321E, // dark-blue      (30, 50, 160)
+    0xFF1482A0, // dark-amber     (160, 130, 20)
+    0xFFA01464, // dark-purple    (100, 20, 160)
+    0xFF828214, // dark-teal      (20, 130, 130)
+    0xFF145AA0, // dark-orange    (160, 90, 20)
+    0xFF6E1E96, // dark-pink      (150, 30, 110)
+    0xFF321E96, // dark-crimson   (150, 30, 50)
+    0xFF1E9650, // dark-emerald   (50, 150, 30)
+    0xFF503296, // dark-indigo    (30, 50, 80)
+    0xFF1496C8, // dark-gold      (200, 150, 20)
+    0xFF961450, // dark-maroon    (80, 20, 150)
+    0xFF50821E, // dark-forest    (30, 130, 80)
+    0xFF144696, // dark-brown     (150, 70, 20)
+    0xFF50326E, // dark-plum      (110, 50, 80)
 ];
 
 /// All named palette themes in display order for the Theme combo-box.
-pub const PALETTE_THEMES: &[(&str, [u32; 8])] = &[
+pub const PALETTE_THEMES: &[(&str, [u32; 16])] = &[
     ("Default", PALETTE_DEFAULT),
     ("Vivid", PALETTE_VIVID),
     ("Neon", PALETTE_NEON),
@@ -606,7 +638,7 @@ pub fn load_preset_thumbnails(
 // ── Palette helpers ───────────────────────────────────────────────────────────
 
 /// Extract an egui `Color32` from a packed sRGB `0xFF_BB_GG_RR` palette entry.
-fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
+fn species_color(idx: usize, palette: &[u32]) -> egui::Color32 {
     let packed = palette[idx];
     egui::Color32::from_rgb(
         (packed & 0xFF) as u8,
@@ -636,7 +668,7 @@ pub fn draw_ui(
                     .logarithmic(true),
             )
             .on_hover_text("Total number of particles — respawn required to take effect");
-            ui.add(egui::Slider::new(&mut sim.species_count, 2..=8).text("Species"))
+            ui.add(egui::Slider::new(&mut sim.species_count, 2..=MAX_SPECIES).text("Species"))
                 .on_hover_text(
                     "Number of distinct species — each has a unique color and interaction profile; respawn required",
                 );
@@ -1089,9 +1121,13 @@ pub fn draw_ui(
                     }
 
                     let n = sim.species_count;
+                    let col_width = if n <= 8 { 36.0 } else { 22.0 };
 
+                    egui::ScrollArea::horizontal()
+                        .id_salt("attraction_scroll")
+                        .show(ui, |ui| {
                     egui::Grid::new("attraction_grid")
-                        .min_col_width(36.0)
+                        .min_col_width(col_width)
                         .show(ui, |ui| {
                             // Header row: blank corner + one label per column species
                             ui.label("");
@@ -1131,7 +1167,7 @@ pub fn draw_ui(
                             if sim.border_mode == 3 {
                                 ui.colored_label(egui::Color32::GRAY, "Wall");
                                 for j in 0..n {
-                                    let bg = attraction_cell_color(sim.attraction[64 + j]);
+                                    let bg = attraction_cell_color(sim.attraction[MAX_SPECIES * MAX_SPECIES + j]);
                                     egui::Frame::new()
                                         .fill(bg)
                                         .inner_margin(egui::Margin::same(2))
@@ -1139,7 +1175,7 @@ pub fn draw_ui(
                                             ui.visuals_mut().widgets.inactive.weak_bg_fill =
                                                 egui::Color32::TRANSPARENT;
                                             let resp = ui.add(
-                                                egui::DragValue::new(&mut sim.attraction[64 + j])
+                                                egui::DragValue::new(&mut sim.attraction[MAX_SPECIES * MAX_SPECIES + j])
                                                     .range(-1.0_f32..=1.0_f32)
                                                     .speed(0.01),
                                             );
@@ -1151,6 +1187,7 @@ pub fn draw_ui(
                                 ui.end_row();
                             }
                         });
+                    });   // ScrollArea
                 });
         });
 
