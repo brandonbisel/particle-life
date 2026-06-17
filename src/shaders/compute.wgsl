@@ -4,6 +4,12 @@
 // 5×5 neighbourhood of cells and accumulates force from every nearby particle, then
 // integrates velocity and position.  Reading from sorted_entries instead of through
 // sorted_indices avoids random pointer-chasing and keeps GPU caches warm at high N.
+//
+// Shared-memory tile path: when all 64 threads in a workgroup process particles from the
+// same grid cell (common in Ecosystem/Symbiosis clustering), their 21-cell neighborhood is
+// identical.  The workgroup cooperatively loads each neighbor cell into a 64-entry LDS tile
+// in rounds, so each global read is shared across all 64 threads instead of repeated 64x.
+// The scalar path handles boundary workgroups and uniformly-distributed particle layouts.
 
 struct Particle {
     position: vec2<f32>,
@@ -43,6 +49,14 @@ struct SortedEntry {
 @group(0) @binding(3) var<storage, read>       cell_offsets:   array<u32>;
 @group(0) @binding(4) var<storage, read>       sorted_entries: array<SortedEntry>;
 
+const TILE: u32 = 64u;
+
+// 64 x 16 B = 1 KB of LDS; plus 12 B for the reference cell and divergence flag.
+var<workgroup> tile:        array<SortedEntry, 64>;
+var<workgroup> ws_ref_gx:   u32;
+var<workgroup> ws_ref_gy:   u32;
+var<workgroup> ws_diverged: atomic<u32>;
+
 fn torus_delta(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     var d = b - a;
     d = d - round(d);
@@ -50,11 +64,20 @@ fn torus_delta(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 }
 
 @compute @workgroup_size(64, 1, 1)
-fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let k = gid.x;
-    if k >= params.n_particles { return; }
+fn cs_main(
+    @builtin(global_invocation_id) gid:     vec3<u32>,
+    @builtin(local_invocation_id)  lid_vec: vec3<u32>,
+) {
+    let k   = gid.x;
+    let lid = lid_vec.x;
 
-    let subj = sorted_entries[k];
+    // Out-of-range threads in the last partial workgroup clamp to particle 0 so they
+    // still reach every workgroupBarrier() in the tile path (uniform control flow
+    // requires all threads to hit barriers regardless of whether they are in-range).
+    let in_range = k < params.n_particles;
+    let k_read   = select(0u, k, in_range);
+
+    let subj = sorted_entries[k_read];
     let i    = subj.index;
 
     var force_acc = vec2<f32>(0.0, 0.0);
@@ -66,6 +89,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let r_sum       = r_max + r_min;
     let inv_r_range = 1.0 / (r_max - r_min);
     let r_max_sq    = r_max * r_max;
+    let r_min_sq    = r_min * r_min;
     let wrapping    = params.border_mode == 0u;
 
     let grid_w = max(5u, u32(2.0 / r_max));
@@ -73,42 +97,121 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let gx_i   = i32(min(u32(subj.position.x * f32(grid_w)), grid_w - 1u));
     let gy_i   = i32(min(u32(subj.position.y * f32(grid_w)), grid_w - 1u));
 
-    for (var dy = -2; dy <= 2; dy++) {
-        for (var dx = -2; dx <= 2; dx++) {
-            let nx   = ((gx_i + dx) % igw + igw) % igw;
-            let ny   = ((gy_i + dy) % igw + igw) % igw;
-            let cell = u32(ny * igw + nx);
+    // Homogeneity check — all 64 threads participate to keep barriers uniform.
+    // sorted_entries is cell-sorted, so a workgroup processing particles from a single
+    // hot cell (as in Ecosystem clusters) will pass this check.  Boundary workgroups
+    // spanning two cells fall back to the scalar path.
+    if lid == 0u {
+        ws_ref_gx = u32(gx_i);
+        ws_ref_gy = u32(gy_i);
+        atomicStore(&ws_diverged, 0u);
+    }
+    workgroupBarrier();
+    if u32(gx_i) != ws_ref_gx || u32(gy_i) != ws_ref_gy {
+        atomicStore(&ws_diverged, 1u);
+    }
+    workgroupBarrier();
+    let homogeneous = atomicLoad(&ws_diverged) == 0u;
 
-            let start = cell_offsets[cell];
-            let end   = cell_offsets[cell + 1u];
+    if homogeneous {
+        // TILE PATH — all 64 threads share the same 21-cell neighborhood.
+        // Cooperatively load each neighbor cell into LDS in rounds of TILE entries,
+        // then all threads compute forces against the tile.
+        // start/end/j are uniform across threads, so while/workgroupBarrier are uniform.
+        for (var dy = -2; dy <= 2; dy++) {
+            for (var dx = -2; dx <= 2; dx++) {
+                // Corner cells (|dx|==2 && |dy|==2) are at distance sqrt(2)*r_max —
+                // always outside the interaction radius.
+                if abs(dx) == 2 && abs(dy) == 2 { continue; }
+                let nx   = ((gx_i + dx) % igw + igw) % igw;
+                let ny   = ((gy_i + dy) % igw + igw) % igw;
+                let cell = u32(ny * igw + nx);
 
-            for (var j = start; j < end; j++) {
-                let entry = sorted_entries[j];
-                if entry.index == i { continue; }
+                let start = cell_offsets[cell];
+                let end   = cell_offsets[cell + 1u];
 
-                // Use torus shortcut only in wrap mode; in repel/static modes use
-                // direct delta so cross-boundary attraction correctly vanishes.
-                let delta   = select(entry.position - subj.position,
-                                     torus_delta(subj.position, entry.position),
-                                     wrapping);
-                let dx_asp  = delta.x * aspect;
-                let dist_sq = dx_asp * dx_asp + delta.y * delta.y;
+                var j = start;
+                while j < end {
+                    let tile_len = min(TILE, end - j);
 
-                if dist_sq > 1e-8 && dist_sq < r_max_sq {
-                    let dist = sqrt(dist_sq);
-                    let a    = attraction[subj.species * 8u + entry.species];
+                    // Thread lid loads its one entry from global memory into LDS.
+                    if lid < tile_len {
+                        tile[lid] = sorted_entries[j + lid];
+                    }
+                    workgroupBarrier();
 
-                    let repulsion   = dist * inv_r_min - 1.0;
-                    let interaction = a * (1.0 - abs(2.0 * dist - r_sum) * inv_r_range);
-                    let mask_rep    = 1.0 - step(r_min, dist);
-                    let mask_int    = step(r_min, dist) * (1.0 - step(r_max, dist));
-                    let f           = mask_rep * repulsion + mask_int * interaction;
+                    if in_range {
+                        for (var t = 0u; t < tile_len; t++) {
+                            let entry = tile[t];
+                            if entry.index == i { continue; }
 
-                    force_acc += (delta / dist) * f;
+                            let delta   = select(entry.position - subj.position,
+                                                 torus_delta(subj.position, entry.position),
+                                                 wrapping);
+                            let dx_asp  = delta.x * aspect;
+                            let dist_sq = dx_asp * dx_asp + delta.y * delta.y;
+
+                            if dist_sq > 1e-8 && dist_sq < r_max_sq {
+                                let inv_dist = inverseSqrt(dist_sq);
+                                let a        = attraction[subj.species * 8u + entry.species];
+
+                                // rep:  delta × (inv_r_min − inv_dist)
+                                // int:  delta × a × (inv_dist − |2 − r_sum·inv_dist| × inv_r_range)
+                                let rep_f    = inv_r_min - inv_dist;
+                                let int_f    = a * (inv_dist - abs(2.0 - r_sum * inv_dist) * inv_r_range);
+                                let f_scaled = select(int_f, rep_f, dist_sq < r_min_sq);
+
+                                force_acc += delta * f_scaled;
+                            }
+                        }
+                    }
+                    workgroupBarrier();
+                    j += TILE;
+                }
+            }
+        }
+    } else {
+        // SCALAR PATH — threads span different cells; each reads sorted_entries independently.
+        if in_range {
+            for (var dy = -2; dy <= 2; dy++) {
+                for (var dx = -2; dx <= 2; dx++) {
+                    if abs(dx) == 2 && abs(dy) == 2 { continue; }
+                    let nx   = ((gx_i + dx) % igw + igw) % igw;
+                    let ny   = ((gy_i + dy) % igw + igw) % igw;
+                    let cell = u32(ny * igw + nx);
+
+                    let start = cell_offsets[cell];
+                    let end   = cell_offsets[cell + 1u];
+
+                    for (var j = start; j < end; j++) {
+                        let entry = sorted_entries[j];
+                        if entry.index == i { continue; }
+
+                        // Use torus shortcut only in wrap mode; in repel/static modes use
+                        // direct delta so cross-boundary attraction correctly vanishes.
+                        let delta   = select(entry.position - subj.position,
+                                             torus_delta(subj.position, entry.position),
+                                             wrapping);
+                        let dx_asp  = delta.x * aspect;
+                        let dist_sq = dx_asp * dx_asp + delta.y * delta.y;
+
+                        if dist_sq > 1e-8 && dist_sq < r_max_sq {
+                            let inv_dist = inverseSqrt(dist_sq);
+                            let a        = attraction[subj.species * 8u + entry.species];
+
+                            let rep_f    = inv_r_min - inv_dist;
+                            let int_f    = a * (inv_dist - abs(2.0 - r_sum * inv_dist) * inv_r_range);
+                            let f_scaled = select(int_f, rep_f, dist_sq < r_min_sq);
+
+                            force_acc += delta * f_scaled;
+                        }
+                    }
                 }
             }
         }
     }
+
+    if !in_range { return; }
 
     var vel = particles[i].velocity + force_acc * (params.force_scale * params.dt);
     vel    *= exp(-params.friction * params.dt);

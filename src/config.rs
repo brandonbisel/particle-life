@@ -1,8 +1,13 @@
-//! Preset serialisation, built-in preset library, and session persistence.
+//! Preset serialisation, built-in preset library, session persistence, and
+//! attraction-matrix share codes.
 //!
 //! A [`Preset`] captures every parameter needed to recreate a simulation state.
 //! Built-in presets are compiled into the binary; user presets are read from
 //! `presets/*.toml` and the last session is auto-saved to `session.toml`.
+//!
+//! [`encode_matrix`] / [`decode_matrix`] convert the active N×N attraction
+//! matrix to and from a compact base64 string suitable for sharing between
+//! running instances.
 
 use std::path::{Path, PathBuf};
 
@@ -12,6 +17,66 @@ pub const SESSION_PATH: &str = "session.toml";
 pub const PRESETS_DIR: &str = "presets";
 /// Directory where ad-hoc screenshots are saved.
 pub const SCREENSHOTS_DIR: &str = "screenshots";
+/// Path to the persisted appearance/theme config.
+pub const APPEARANCE_PATH: &str = "appearance.toml";
+
+// ── Appearance ────────────────────────────────────────────────────────────────
+
+/// UI colour theme choices shown in the Appearance panel.
+#[derive(Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+pub enum UiTheme {
+    /// Follow the OS dark/light preference.
+    #[default]
+    System,
+    Dark,
+    Light,
+    Midnight,
+    Nord,
+    Catppuccin,
+}
+
+/// Persisted appearance preferences (theme + world background colour).
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct AppearanceConfig {
+    #[serde(default)]
+    pub ui_theme: UiTheme,
+    /// World background colour as sRGB bytes `[R, G, B]`.
+    #[serde(default = "default_bg")]
+    pub bg_color: [u8; 3],
+}
+
+fn default_bg() -> [u8; 3] {
+    [3, 3, 5]
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            ui_theme: UiTheme::default(),
+            bg_color: default_bg(),
+        }
+    }
+}
+
+/// Persist appearance config to `appearance.toml` (best-effort; logs on failure).
+pub fn save_appearance(a: &AppearanceConfig) {
+    match toml::to_string_pretty(a) {
+        Ok(s) => {
+            if let Err(e) = std::fs::write(APPEARANCE_PATH, s) {
+                log::warn!("Failed to save appearance: {e}");
+            }
+        }
+        Err(e) => log::warn!("Failed to serialise appearance: {e}"),
+    }
+}
+
+/// Load `appearance.toml`, returning defaults if missing or malformed.
+pub fn load_appearance() -> AppearanceConfig {
+    std::fs::read_to_string(APPEARANCE_PATH)
+        .ok()
+        .and_then(|s| toml::from_str(&s).ok())
+        .unwrap_or_default()
+}
 
 // ── Preset ────────────────────────────────────────────────────────────────────
 
@@ -249,6 +314,46 @@ pub fn load_presets_dir() -> Vec<Preset> {
             }
         })
         .collect()
+}
+
+// ── Share codes ───────────────────────────────────────────────────────────────
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+/// Encode the active n×n attraction matrix as a compact base64 share code.
+///
+/// Format: 1 byte `species_count`, then `n*n` bytes where each byte is the
+/// attraction value quantised from `[-1.0, 1.0]` to `i8` `[-127, 127]`.
+pub fn encode_matrix(species: usize, attraction: &[f32; 64]) -> String {
+    let mut bytes = Vec::with_capacity(1 + species * species);
+    bytes.push(species as u8);
+    for i in 0..species {
+        for j in 0..species {
+            let v = attraction[i * crate::simulation::MAX_SPECIES + j];
+            bytes.push((v.clamp(-1.0, 1.0) * 127.0).round() as i8 as u8);
+        }
+    }
+    STANDARD.encode(&bytes)
+}
+
+/// Decode a share code produced by [`encode_matrix`].
+///
+/// Returns `(species_count, row_major_n×n_values)` on success.
+pub fn decode_matrix(code: &str) -> Result<(usize, Vec<f32>), String> {
+    let bytes = STANDARD.decode(code.trim()).map_err(|e| e.to_string())?;
+    if bytes.is_empty() {
+        return Err("empty code".into());
+    }
+    let n = bytes[0] as usize;
+    if n == 0 || n > crate::simulation::MAX_SPECIES {
+        return Err(format!("invalid species count {n}"));
+    }
+    let expected = 1 + n * n;
+    if bytes.len() != expected {
+        return Err(format!("expected {expected} bytes, got {}", bytes.len()));
+    }
+    let values = bytes[1..].iter().map(|&b| b as i8 as f32 / 127.0).collect();
+    Ok((n, values))
 }
 
 // ── Session ───────────────────────────────────────────────────────────────────

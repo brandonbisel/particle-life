@@ -61,7 +61,7 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 | `main.rs` | Entry point; creates `EventLoop` with `ControlFlow::Poll` |
 | `app.rs` | `AppHandler` / `AppState`; event routing, camera, per-frame orchestration |
 | `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
-| `simulation.rs` | `SimulationState`; GPU buffers, 5-pass compute dispatch, preset apply, spawn |
+| `simulation.rs` | `SimulationState`; GPU buffers, 6-pass compute dispatch, preset apply, spawn |
 | `config.rs` | `Preset` struct, four built-in presets, TOML I/O, session persistence |
 | `benchmark.rs` | `QuickBench` (ad-hoc), `BenchmarkRunner` (full suite + CSV export), `CapacityBench` (binary-search max-particle finder at target FPS) |
 | `ui.rs` | All egui draw functions; returns response structs — no app state owned here |
@@ -83,17 +83,22 @@ RedrawRequested
 
 Physics runs entirely on GPU. There is no CPU physics update path.
 
-### GPU Compute Pipeline (5 passes, all in `sim.dispatch()`)
+### GPU Compute Pipeline (6 passes, all in `sim.dispatch()`)
 
 | Pass | Shader | Notes |
 |------|--------|-------|
-| Count | `grid_count.wgsl` | Atomic increment per cell; cell_counts_buf cleared via `encoder.clear_buffer` before this |
-| Prefix | `grid_prefix.wgsl` | Serial scan (1 workgroup); produces cell_offsets; zeros cell_counts for reuse as scatter cursors |
-| Scatter | `grid_scatter.wgsl` | Assigns each particle a slot in sorted_indices via atomicAdd |
-| Reorder | `grid_reorder.wgsl` | Copies `{position, species, index}` → sorted_entries in cell order |
-| Force | `compute.wgsl` | 5×5 neighbor cells; reads sorted_entries sequentially (cache-friendly) |
+| Count | `grid_count.wgsl` | Atomic increment per cell; only `n_cells` bytes of cell_counts_buf cleared before this |
+| Prefix A | `grid_prefix_a.wgsl` | 256-thread Blelloch scan per block; writes local prefix sums + block totals; zeros cell_counts for scatter reuse |
+| Prefix B | `grid_prefix_b.wgsl` | Serial scan of ≤1173 block totals (vs 300K in the old single-pass design); stores grand total as sentinel |
+| Prefix C | `grid_prefix_c.wgsl` | Propagates block offsets to produce global prefix sums; writes cell_offsets[n_cells] sentinel |
+| Scatter | `grid_scatter.wgsl` | Merged scatter+reorder: claims a slot via atomicAdd and writes `SortedEntry{pos, species, index}` directly to sorted_entries |
+| Force | `compute.wgsl` | 21-cell neighborhood (corner cells pruned); LDS tile path for homogeneous workgroups (clustering), scalar fallback otherwise |
 
-The reorder pass is performance-critical. Without it, the force pass does random reads into the particle buffer, which causes severe cache thrashing at high N. Do not remove or skip it.
+`sorted_entries` stores `{position: vec2<f32>, species: u32, index: u32}` (16 B per entry). The `index` field holds the original particle index and is used for both self-exclusion and write-back. Do not remove it.
+
+The force shader has two paths selected at runtime per workgroup:
+- **Tile path**: entered when all 64 threads are in the same grid cell (detected via `ws_diverged` workgroup atomic). Cooperatively loads neighbor cells into `var<workgroup> tile[64]` in rounds of 64, amortising global reads 64×. Workgroup size = TILE size, so one cooperative load pass fills exactly one tile with no waste.
+- **Scalar path**: entered when threads span multiple cells (cell boundaries, sparse distributions). Each thread reads `sorted_entries` independently — identical to the pre-P7 code.
 
 ### Spatial Grid
 
@@ -193,6 +198,12 @@ ndc = (pos - camera_center) * (shader_zoom * 2.0)
 
 The `attraction` field in a preset is a compact `species_count × species_count` `Vec<f32>`. `apply_preset` expands it into the full 8×8 GPU layout.
 
+### Matrix Share Codes
+
+`config::encode_matrix(species, &attraction)` encodes the active sub-matrix as a base64 string: 1 byte species count followed by `n²` quantised `i8` values (each `f32` in `[-1, 1]` mapped to `[-127, 127]`). `config::decode_matrix(code)` reverses it, returning `(species_count, Vec<f32>)`.
+
+The share-code UI in the Presets panel exposes Copy (writes to egui clipboard via `ctx.copy_text`) and a paste field with a right-click context menu. The context menu sets `UiResponse::paste_share_code`; `app.rs` handles it by calling `egui_state.clipboard_text()` and writing the result into egui temp storage under the key `share_code_paste_buf`. This routes through egui-winit's existing arboard connection — **do not** create a separate `arboard::Clipboard` instance inside the draw closure, as that conflicts with the one egui-winit owns and silently fails on Wayland.
+
 **Preset loading in normal UI flow** (`app.rs`): after calling `apply_preset()`, `app.rs` overrides `world_width/height/particle_count` to preserve the preset's density at the current window size. The preset's stored world dimensions are used only to compute the density ratio — they are not applied directly.
 
 **Benchmark loading**: `BenchmarkRunner::combo_preset()` and `CapacityBench::preset_for()` both return presets with `world_width`/`world_height` pinned to 1280×720 and `auto_density = false`. The benchmark handler calls `apply_preset()` directly without the density-scaling override, ensuring reproducible results.
@@ -204,6 +215,7 @@ The `attraction` field in a preset is a compact `species_count × species_count`
 - Only the active `species_count × species_count` sub-matrix is meaningful; unused entries are zero
 - `randomize_attraction()` fills the active sub-matrix with uniform random `[-1, 1]`
 - Uploaded to `attraction_buf` (STORAGE, 256 bytes) each frame in `dispatch()`
+- Shareable via `config::encode_matrix` / `config::decode_matrix` — see **Matrix Share Codes** under Preset System above
 
 ## Mouse / Tool State
 

@@ -24,3 +24,5 @@ session.toml
 
 # Benchmark output CSVs (tracked separately)
 /benchmarks/
+
+*.kate-swp
