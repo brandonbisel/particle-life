@@ -119,7 +119,7 @@ pub struct Preset {
     pub r_max: f32,
     pub friction: f32,
     pub force_scale: f32,
-    /// 0 = Wrap, 1 = Repel, 2 = Static.
+    /// 0 = Wrap (torus), 1 = Repel (spring wall), 2 = Static (hard wall), 3 = Matrix (per-species wall attraction).
     pub border_mode: u32,
     pub border_repel_strength: f32,
     /// When true the engine scales `world_width`/`world_height` to maintain `density_target`
@@ -435,6 +435,13 @@ mod tests {
     }
 
     #[test]
+    fn bundled_presets_are_valid() {
+        for preset in bundled_presets() {
+            assert_preset_invariants(&preset);
+        }
+    }
+
+    #[test]
     fn preset_round_trips_via_toml() {
         for preset in builtin_presets() {
             let serialized = toml::to_string_pretty(&preset).expect("serialize failed");
@@ -463,5 +470,84 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── encode_matrix / decode_matrix ─────────────────────────────────────────
+
+    fn make_attraction(species: usize) -> [f32; 272] {
+        let mut a = [0.0f32; 272];
+        for i in 0..species {
+            for j in 0..species {
+                // deterministic pattern with values spread across [-1, 1]
+                a[i * crate::simulation::MAX_SPECIES + j] =
+                    ((i * species + j) as f32 / (species * species) as f32) * 2.0 - 1.0;
+            }
+        }
+        a
+    }
+
+    #[test]
+    fn matrix_encode_decode_round_trip() {
+        for species in [1, 2, 6, crate::simulation::MAX_SPECIES] {
+            let original = make_attraction(species);
+            let code = encode_matrix(species, &original);
+            let (decoded_species, decoded_vals) =
+                decode_matrix(&code).expect("decode should succeed");
+            assert_eq!(decoded_species, species, "species count mismatch");
+            assert_eq!(decoded_vals.len(), species * species);
+            for i in 0..species {
+                for j in 0..species {
+                    let orig = original[i * crate::simulation::MAX_SPECIES + j];
+                    let dec = decoded_vals[i * species + j];
+                    // Quantisation to i8 [-127, 127] introduces at most 1/127 ≈ 0.008 error.
+                    assert!(
+                        (orig - dec).abs() < 1.0 / 127.0 + 1e-5,
+                        "species={species} [{i},{j}]: orig={orig} dec={dec}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn matrix_decode_rejects_empty_string() {
+        assert!(decode_matrix("").is_err());
+    }
+
+    #[test]
+    fn matrix_decode_rejects_invalid_base64() {
+        assert!(decode_matrix("not!valid@base64#").is_err());
+    }
+
+    #[test]
+    fn matrix_decode_rejects_zero_species() {
+        // Encode a single byte 0x00 (species=0) in base64.
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let code = STANDARD.encode([0u8]);
+        assert!(decode_matrix(&code).is_err());
+    }
+
+    #[test]
+    fn matrix_decode_rejects_oversized_species() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let too_many = (crate::simulation::MAX_SPECIES + 1) as u8;
+        let code = STANDARD.encode([too_many]);
+        assert!(decode_matrix(&code).is_err());
+    }
+
+    #[test]
+    fn matrix_decode_rejects_truncated_payload() {
+        // Valid species count but only 1 byte instead of n*n+1.
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let code = STANDARD.encode([4u8, 0u8]); // species=4, but 4*4+1=17 bytes expected
+        assert!(decode_matrix(&code).is_err());
+    }
+
+    #[test]
+    fn matrix_encode_trims_whitespace_on_decode() {
+        let a = make_attraction(3);
+        let code = encode_matrix(3, &a);
+        let padded = format!("  {code}  \n");
+        assert!(decode_matrix(&padded).is_ok());
     }
 }

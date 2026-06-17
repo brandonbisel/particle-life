@@ -2,6 +2,9 @@
 name = "ParticleLife"
 version = "0.5.0"
 edition = "2024"
+authors = ["Brandon Bisel <brandonbisel@gmail.com>"]
+license = "MIT"
+description = "GPU-accelerated particle life simulator with emergent flocking and clustering behaviour"
 
 [dependencies]
 winit      = "0.30"
