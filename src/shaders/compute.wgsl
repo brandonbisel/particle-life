@@ -155,7 +155,7 @@ fn cs_main(
 
                             if dist_sq > 1e-8 && dist_sq < r_max_sq {
                                 let inv_dist = inverseSqrt(dist_sq);
-                                let a        = attraction[subj.species * params.n_species + entry.species];
+                                let a        = attraction[subj.species * MAX_SPECIES + entry.species];
 
                                 // rep:  delta × (inv_r_min − inv_dist)
                                 // int:  delta × a × (inv_dist − |2 − r_sum·inv_dist| × inv_r_range)
@@ -199,7 +199,7 @@ fn cs_main(
 
                         if dist_sq > 1e-8 && dist_sq < r_max_sq {
                             let inv_dist = inverseSqrt(dist_sq);
-                            let a        = attraction[subj.species * params.n_species + entry.species];
+                            let a        = attraction[subj.species * MAX_SPECIES + entry.species];
 
                             let rep_f    = inv_r_min - inv_dist;
                             let int_f    = a * (inv_dist - abs(2.0 - r_sum * inv_dist) * inv_r_range);
