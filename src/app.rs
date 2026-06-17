@@ -129,6 +129,10 @@ struct AppState {
     appearance: config::AppearanceConfig,
     os_dark: bool,
 
+    // UI overlay state
+    matrix_popped_out: bool,
+    appearance_open: bool,
+
     // Pending one-shot actions triggered by keyboard shortcuts
     pending_screenshot: bool,
 
@@ -233,7 +237,7 @@ impl ApplicationHandler for AppHandler {
             .theme()
             .map(|t| t == winit::window::Theme::Dark)
             .unwrap_or(true);
-        ui::apply_theme(&egui_ctx, appearance.ui_theme, os_dark);
+        ui::apply_theme(&egui_ctx, appearance.ui_theme, appearance.overlay_alpha, os_dark);
 
         self.state = Some(AppState {
             renderer,
@@ -256,6 +260,8 @@ impl ApplicationHandler for AppHandler {
             vsync_override: false,
             appearance,
             os_dark,
+            matrix_popped_out: false,
+            appearance_open: false,
             tool: ui::Tool::Pan,
             tool_range: 0.1,
             mouse_strength: 2.0,
@@ -334,6 +340,13 @@ impl ApplicationHandler for AppHandler {
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor_px = position;
 
+                // If egui grabbed the pointer this frame (e.g. resize drag started),
+                // cancel any world-panning that slipped through the press-time check.
+                if state.lmb_panning && state.egui_ctx.is_using_pointer() {
+                    state.lmb_panning = false;
+                    state.lmb_egui = true;
+                }
+
                 if state.lmb_panning || state.mmb_panning {
                     let vp = window.inner_size();
                     let shader_zoom = state.camera.zoom_factor * state.fit_zoom;
@@ -360,8 +373,11 @@ impl ApplicationHandler for AppHandler {
                 match (button, btn_state) {
                     (MouseButton::Left, ElementState::Pressed) => {
                         state.lmb_down = true;
-                        state.lmb_egui = resp.consumed;
-                        if !resp.consumed {
+                        let egui_wants_mouse = resp.consumed
+                            || state.egui_ctx.is_pointer_over_area()
+                            || state.egui_ctx.is_using_pointer();
+                        state.lmb_egui = egui_wants_mouse;
+                        if !egui_wants_mouse {
                             match state.tool {
                                 ui::Tool::Pan => {
                                     state.lmb_panning = true;
@@ -525,7 +541,7 @@ impl ApplicationHandler for AppHandler {
 
             WindowEvent::ThemeChanged(t) => {
                 state.os_dark = t == winit::window::Theme::Dark;
-                ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.os_dark);
+                ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.appearance.overlay_alpha, state.os_dark);
             }
 
             WindowEvent::RedrawRequested => {
@@ -606,8 +622,11 @@ impl ApplicationHandler for AppHandler {
                     let vsync_available = state.renderer.vsync_toggle_available();
                     let preset_thumbnails = &state.preset_thumbnails;
                     let gallery_open = &mut state.gallery_open;
+                    let appearance_open = &mut state.appearance_open;
+                    let matrix_popped_out = &mut state.matrix_popped_out;
                     let per_species_count = &state.per_species_count;
                     let appearance = &mut state.appearance;
+                    let os_dark = state.os_dark;
                     let mut ui_r = ui::UiResponse::default();
                     let mut bench_r = ui::BenchmarkPanelResponse {
                         start: false,
@@ -622,7 +641,22 @@ impl ApplicationHandler for AppHandler {
                     let mut reset_view = false;
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r = ui::draw_ui(ctx, sim, appearance, bench_running);
+                        ui_r = ui::draw_ui(ctx, sim, bench_running, matrix_popped_out);
+                        if *matrix_popped_out
+                            && ui::draw_matrix_window(ctx, sim, matrix_popped_out)
+                        {
+                            ui_r.randomize = true;
+                        }
+                        let appearance_resp = ui::draw_appearance_overlay(
+                            ctx,
+                            sim,
+                            appearance,
+                            os_dark,
+                            appearance_open,
+                        );
+                        ui_r.palette_changed |= appearance_resp.palette_changed;
+                        ui_r.randomize_palette |= appearance_resp.randomize_palette;
+                        ui_r.appearance_changed |= appearance_resp.appearance_changed;
                         bench_r = ui::draw_perf_overlay(
                             ctx,
                             frame_times,
@@ -635,12 +669,15 @@ impl ApplicationHandler for AppHandler {
                             vsync_available,
                             per_species_count,
                         );
-                        let (rv, ss, tg, toolbar_rect) =
-                            ui::draw_toolbar(ctx, tool, *gallery_open, bench_running);
+                        let (rv, ss, tg, ta, toolbar_rect) =
+                            ui::draw_toolbar(ctx, tool, *gallery_open, *appearance_open, bench_running);
                         reset_view = rv;
                         take_screenshot = ss;
                         if tg {
                             *gallery_open = !*gallery_open;
+                        }
+                        if ta {
+                            *appearance_open = !*appearance_open;
                         }
                         if *gallery_open
                             && !bench_running
@@ -679,6 +716,9 @@ impl ApplicationHandler for AppHandler {
 
                 if ui_resp.toggle_gallery {
                     state.gallery_open = !state.gallery_open;
+                }
+                if ui_resp.matrix_pop_out_toggled {
+                    state.matrix_popped_out = !state.matrix_popped_out;
                 }
                 if ui_resp.respawn {
                     // In auto-density mode, resize the world before spawning so density stays
@@ -853,7 +893,7 @@ impl ApplicationHandler for AppHandler {
                 }
 
                 if ui_resp.appearance_changed {
-                    ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.os_dark);
+                    ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.appearance.overlay_alpha, state.os_dark);
                     config::save_appearance(&state.appearance);
                 }
 

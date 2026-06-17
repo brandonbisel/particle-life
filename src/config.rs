@@ -43,10 +43,17 @@ pub struct AppearanceConfig {
     /// World background colour as sRGB bytes `[R, G, B]`.
     #[serde(default = "default_bg")]
     pub bg_color: [u8; 3],
+    /// Overlay panel opacity: 0 = fully transparent, 255 = fully opaque.
+    #[serde(default = "default_overlay_alpha")]
+    pub overlay_alpha: u8,
 }
 
 fn default_bg() -> [u8; 3] {
     [3, 3, 5]
+}
+
+fn default_overlay_alpha() -> u8 {
+    255
 }
 
 impl Default for AppearanceConfig {
@@ -54,6 +61,7 @@ impl Default for AppearanceConfig {
         Self {
             ui_theme: UiTheme::default(),
             bg_color: default_bg(),
+            overlay_alpha: default_overlay_alpha(),
         }
     }
 }
