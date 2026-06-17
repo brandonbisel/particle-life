@@ -309,7 +309,13 @@ pub fn draw_toolbar(
         });
 
     let (rv, take_screenshot, toggle_gallery, toggle_appearance) = response.inner;
-    (rv, take_screenshot, toggle_gallery, toggle_appearance, response.response.rect)
+    (
+        rv,
+        take_screenshot,
+        toggle_gallery,
+        toggle_appearance,
+        response.response.rect,
+    )
 }
 
 /// Draw the floating tool-options panel when a parametric tool is active.
@@ -1097,7 +1103,7 @@ pub fn draw_ui(
                     }   // else: matrix not popped out
                 });   // CollapsingHeader (Attraction Matrix)
             });   // ScrollArea::vertical (outer)
-        });   // Window
+        }); // Window
 
     resp
 }
@@ -1300,11 +1306,7 @@ pub fn draw_appearance_overlay(
 ///
 /// Only called when `open` is true (matrix is popped out of the main panel).
 /// Returns true if "Randomize Matrix" was clicked.
-pub fn draw_matrix_window(
-    ctx: &egui::Context,
-    sim: &mut SimulationState,
-    open: &mut bool,
-) -> bool {
+pub fn draw_matrix_window(ctx: &egui::Context, sim: &mut SimulationState, open: &mut bool) -> bool {
     let mut randomize = false;
     let screen_w = ctx.screen_rect().width();
 

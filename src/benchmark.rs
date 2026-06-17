@@ -957,7 +957,10 @@ mod tests {
 
     #[test]
     fn num_combos_matches_product() {
-        assert_eq!(BenchmarkRunner::num_combos(), BUILTIN_COUNT * BENCHMARK_TIERS.len());
+        assert_eq!(
+            BenchmarkRunner::num_combos(),
+            BUILTIN_COUNT * BENCHMARK_TIERS.len()
+        );
         assert_eq!(BenchmarkRunner::num_combos(), 16);
     }
 
@@ -967,8 +970,14 @@ mod tests {
         for combo in 0..total {
             let pi = BenchmarkRunner::combo_preset_idx(combo);
             let ti = BenchmarkRunner::combo_tier_idx(combo);
-            assert!(pi < BUILTIN_COUNT, "preset_idx {pi} out of range for combo {combo}");
-            assert!(ti < BENCHMARK_TIERS.len(), "tier_idx {ti} out of range for combo {combo}");
+            assert!(
+                pi < BUILTIN_COUNT,
+                "preset_idx {pi} out of range for combo {combo}"
+            );
+            assert!(
+                ti < BENCHMARK_TIERS.len(),
+                "tier_idx {ti} out of range for combo {combo}"
+            );
             // Verify the flat index round-trips.
             assert_eq!(pi * BENCHMARK_TIERS.len() + ti, combo);
         }
@@ -979,10 +988,22 @@ mod tests {
         for combo in 0..BenchmarkRunner::num_combos() {
             let p = BenchmarkRunner::combo_preset(combo);
             let tier = BENCHMARK_TIERS[BenchmarkRunner::combo_tier_idx(combo)];
-            assert!(!p.auto_density, "combo {combo}: auto_density must be false for reproducibility");
-            assert_eq!(p.world_width, tier.world_width, "combo {combo}: world_width mismatch");
-            assert_eq!(p.world_height, tier.world_height, "combo {combo}: world_height mismatch");
-            assert_eq!(p.particle_count, tier.particles, "combo {combo}: particle_count mismatch");
+            assert!(
+                !p.auto_density,
+                "combo {combo}: auto_density must be false for reproducibility"
+            );
+            assert_eq!(
+                p.world_width, tier.world_width,
+                "combo {combo}: world_width mismatch"
+            );
+            assert_eq!(
+                p.world_height, tier.world_height,
+                "combo {combo}: world_height mismatch"
+            );
+            assert_eq!(
+                p.particle_count, tier.particles,
+                "combo {combo}: particle_count mismatch"
+            );
         }
     }
 

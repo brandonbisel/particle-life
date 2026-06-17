@@ -1162,8 +1162,16 @@ mod tests {
     // [256..272] is the wall row.  If MAX_SPECIES changes these must stay consistent.
     #[test]
     fn attraction_array_layout() {
-        assert_eq!(MAX_SPECIES * MAX_SPECIES, 256, "particle matrix occupies [0..256]");
-        assert_eq!(MAX_SPECIES * MAX_SPECIES + MAX_SPECIES, 272, "wall row ends at 272");
+        assert_eq!(
+            MAX_SPECIES * MAX_SPECIES,
+            256,
+            "particle matrix occupies [0..256]"
+        );
+        assert_eq!(
+            MAX_SPECIES * MAX_SPECIES + MAX_SPECIES,
+            272,
+            "wall row ends at 272"
+        );
     }
 
     #[test]

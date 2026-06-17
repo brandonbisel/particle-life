@@ -237,7 +237,12 @@ impl ApplicationHandler for AppHandler {
             .theme()
             .map(|t| t == winit::window::Theme::Dark)
             .unwrap_or(true);
-        ui::apply_theme(&egui_ctx, appearance.ui_theme, appearance.overlay_alpha, os_dark);
+        ui::apply_theme(
+            &egui_ctx,
+            appearance.ui_theme,
+            appearance.overlay_alpha,
+            os_dark,
+        );
 
         self.state = Some(AppState {
             renderer,
@@ -541,7 +546,12 @@ impl ApplicationHandler for AppHandler {
 
             WindowEvent::ThemeChanged(t) => {
                 state.os_dark = t == winit::window::Theme::Dark;
-                ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.appearance.overlay_alpha, state.os_dark);
+                ui::apply_theme(
+                    &state.egui_ctx,
+                    state.appearance.ui_theme,
+                    state.appearance.overlay_alpha,
+                    state.os_dark,
+                );
             }
 
             WindowEvent::RedrawRequested => {
@@ -642,8 +652,7 @@ impl ApplicationHandler for AppHandler {
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
                         ui_r = ui::draw_ui(ctx, sim, bench_running, matrix_popped_out);
-                        if *matrix_popped_out
-                            && ui::draw_matrix_window(ctx, sim, matrix_popped_out)
+                        if *matrix_popped_out && ui::draw_matrix_window(ctx, sim, matrix_popped_out)
                         {
                             ui_r.randomize = true;
                         }
@@ -669,8 +678,13 @@ impl ApplicationHandler for AppHandler {
                             vsync_available,
                             per_species_count,
                         );
-                        let (rv, ss, tg, ta, toolbar_rect) =
-                            ui::draw_toolbar(ctx, tool, *gallery_open, *appearance_open, bench_running);
+                        let (rv, ss, tg, ta, toolbar_rect) = ui::draw_toolbar(
+                            ctx,
+                            tool,
+                            *gallery_open,
+                            *appearance_open,
+                            bench_running,
+                        );
                         reset_view = rv;
                         take_screenshot = ss;
                         if tg {
@@ -893,7 +907,12 @@ impl ApplicationHandler for AppHandler {
                 }
 
                 if ui_resp.appearance_changed {
-                    ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.appearance.overlay_alpha, state.os_dark);
+                    ui::apply_theme(
+                        &state.egui_ctx,
+                        state.appearance.ui_theme,
+                        state.appearance.overlay_alpha,
+                        state.os_dark,
+                    );
                     config::save_appearance(&state.appearance);
                 }
 
