@@ -178,38 +178,27 @@ Copy to baseline:
 cp benchmarks/run_suite.csv benchmarks/baseline_suite.csv
 ```
 
-### Generate benchmarks.md
+### Update BENCHMARKS.md
+
+`BENCHMARKS.md` in the repo root is the tracked benchmark record. The `benchmarks/` directory
+is gitignored — CSVs there are local only.
 
 Read `benchmarks/run_suite.csv`. Compute throughput = `frames / wall_secs` for each row
 (use throughput, not avg_fps, per the benchmark skill guidance).
 
-Write `benchmarks/benchmarks.md` with this format:
+Update the **Linux Suite Benchmark** section of `BENCHMARKS.md`:
+- Update the section heading to include the new version: `### Suite Benchmark (v<new-version>)`
+- Replace the per-run detail table rows with the new CSV data
+- Update the **500K performance** summary sentence below the table
 
-```markdown
-# Performance Benchmarks
+Do NOT add historical comparison tables or `<details>` blocks — BENCHMARKS.md tracks the
+current baseline only; git history preserves prior runs.
 
-**Version:** <new-version>  
-**Date:** <today's date YYYY-MM-DD>  
-**Platform:** Linux (AMD RX 9070 XT, RADV Vulkan)
+Also update the **Linux Capacity Benchmark** section if a capacity run was performed.
 
-> Throughput = frames ÷ wall_seconds (reliable primary metric).  
-> avg_fps inflates 1.1–2.1× at ≤100K particles due to near-zero-dt winit events.
-
-## Suite Results
-
-| Preset | 10K (tp) | 50K (tp) | 100K (tp) | 500K (tp / avg fps) |
-|--------|----------|----------|-----------|---------------------|
-| ...    |          |          |           |                     |
-
-*Viewport: WxH px*
-```
-
-Fill in the table from the CSV. For 500K, show both throughput and avg_fps.
-Note the viewport dimensions from the CSV's `vp_w`/`vp_h` columns.
-
-Commit benchmark results:
+Commit:
 ```sh
-git add benchmarks/run_suite.csv benchmarks/baseline_suite.csv benchmarks/benchmarks.md
+git add BENCHMARKS.md benchmarks/run_suite.csv benchmarks/baseline_suite.csv
 git commit -m "chore: update benchmarks for v<new-version>"
 ```
 
@@ -222,9 +211,9 @@ Stage and commit:
 git add Cargo.toml Cargo.lock
 ```
 
-Also stage any README.md or AGENTS.md edits made in Step 6:
+Also stage any README.md, AGENTS.md, or BENCHMARKS.md edits made in Steps 6–8:
 ```sh
-git add README.md AGENTS.md
+git add README.md AGENTS.md BENCHMARKS.md
 ```
 
 ```sh

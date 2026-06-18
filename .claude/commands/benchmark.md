@@ -150,3 +150,11 @@ action (e.g., investigate regression, re-run for variance check, save baseline).
 ## Build Requirement
 
 Always use `--release`. Debug builds are catastrophically slow and not representative.
+
+## File Persistence
+
+The `benchmarks/` directory is gitignored. Baseline CSVs (`baseline_suite.csv`,
+`baseline_capacity.csv`) are local to the machine and are not committed to the repo.
+
+The human-readable benchmark record is `BENCHMARKS.md` in the repo root — that file IS
+tracked. It is updated during `/cut-release`, not by this skill. Do not modify it here.
