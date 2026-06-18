@@ -1,25 +1,28 @@
 name = "Grand Chain"
-description = "Eight-species circular predator-prey chain; produces interleaved pursuit spirals at larger scale than the six-species Chains preset."
-particle_count = 50000
+description = "Eight species self-attract into compact blobs that slowly rotate in a chain — each blob pursues the next colour while drifting apart from the one behind."
+particle_count = 25000
 species_count = 8
 world_width = 1280.0
 world_height = 720.0
 particle_radius = 1.5
 r_min = 0.025
-r_max = 0.08
-friction = 0.45
-force_scale = 0.008
+r_max = 0.10
+friction = 0.70
+force_scale = 0.010
 border_mode = 0
 border_repel_strength = 5.0
 
-# Row-major 8×8 matrix. Species i chases (i+1)%8 and flees (i+7)%8.
+# Row-major 8×8 matrix.
+# Each species strongly self-attracts (0.8) → compact blob.
+# Pursues the next species in the ring (+0.65) and flees the previous (-0.45).
+# All other pairs are neutral (0.0) so blobs drift freely without opposing forces.
 attraction = [
-    0.0,  0.9,  0.0,  0.0,  0.0,  0.0,  0.0, -0.4,
-   -0.4,  0.0,  0.9,  0.0,  0.0,  0.0,  0.0,  0.0,
-    0.0, -0.4,  0.0,  0.9,  0.0,  0.0,  0.0,  0.0,
-    0.0,  0.0, -0.4,  0.0,  0.9,  0.0,  0.0,  0.0,
-    0.0,  0.0,  0.0, -0.4,  0.0,  0.9,  0.0,  0.0,
-    0.0,  0.0,  0.0,  0.0, -0.4,  0.0,  0.9,  0.0,
-    0.0,  0.0,  0.0,  0.0,  0.0, -0.4,  0.0,  0.9,
-    0.9,  0.0,  0.0,  0.0,  0.0,  0.0, -0.4,  0.0,
+     0.8,  0.65,  0.0,  0.0,  0.0,  0.0,  0.0, -0.45,
+    -0.45,  0.8,  0.65,  0.0,  0.0,  0.0,  0.0,  0.0,
+     0.0, -0.45,  0.8,  0.65,  0.0,  0.0,  0.0,  0.0,
+     0.0,  0.0, -0.45,  0.8,  0.65,  0.0,  0.0,  0.0,
+     0.0,  0.0,  0.0, -0.45,  0.8,  0.65,  0.0,  0.0,
+     0.0,  0.0,  0.0,  0.0, -0.45,  0.8,  0.65,  0.0,
+     0.0,  0.0,  0.0,  0.0,  0.0, -0.45,  0.8,  0.65,
+     0.65,  0.0,  0.0,  0.0,  0.0,  0.0, -0.45,  0.8,
 ]
