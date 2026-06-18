@@ -425,9 +425,10 @@ impl WgpuState {
                 label: Some("Frame"),
             });
 
-        self.particle_radius = sim.particle_radius;
+        let eff_r = sim.effective_particle_radius();
+        self.particle_radius = eff_r;
         let world_aspect = sim.world_aspect();
-        let particle_radius_norm = sim.particle_radius / self.surface_config.height as f32;
+        let particle_radius_norm = eff_r / self.surface_config.height as f32;
         self.update_globals(
             camera_center,
             shader_zoom,

@@ -53,7 +53,11 @@ fn default_bg() -> [u8; 3] {
 }
 
 fn default_overlay_alpha() -> u8 {
-    255
+    217 // 85%
+}
+
+fn default_auto_particle_size() -> bool {
+    true
 }
 
 impl Default for AppearanceConfig {
@@ -113,6 +117,11 @@ pub struct Preset {
     /// World height in simulation units.  See `world_width`.
     pub world_height: f32,
     pub particle_radius: f32,
+    /// When true the renderer auto-scales `particle_radius` so that visual coverage stays
+    /// constant across particle counts and world sizes (default).  When false the stored
+    /// `particle_radius` is used directly.
+    #[serde(default = "default_auto_particle_size")]
+    pub auto_particle_size: bool,
     /// Hard-core repulsion radius as a fraction of [`BASE_WORLD_HEIGHT`](crate::simulation::BASE_WORLD_HEIGHT).
     pub r_min: f32,
     /// Outer interaction cutoff radius as a fraction of [`BASE_WORLD_HEIGHT`](crate::simulation::BASE_WORLD_HEIGHT).
@@ -156,6 +165,7 @@ impl Preset {
             world_width: 1280.0,
             world_height: 720.0,
             particle_radius: 1.5,
+            auto_particle_size: true,
             r_min: 0.025,
             r_max: 0.08,
             friction: 0.5,

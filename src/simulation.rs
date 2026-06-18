@@ -90,8 +90,11 @@ pub struct SimulationState {
     pub friction: f32,
     /// Global scale factor applied to all inter-particle forces.
     pub force_scale: f32,
-    /// Particle render radius in world units.
+    /// Particle render radius in world units (used when `auto_particle_size` is false).
     pub particle_radius: f32,
+    /// When true, the effective radius is computed from particle count and world area so that
+    /// visual coverage stays constant.  The stored `particle_radius` is ignored.
+    pub auto_particle_size: bool,
     /// Row-major attraction coefficients.
     ///
     /// `[0..256]`: the N×N particle–particle matrix; `attraction[i * MAX_SPECIES + j]` is the
@@ -198,6 +201,22 @@ impl SimulationState {
     /// `world_width / world_height` — passed to the shader to correct for non-square worlds.
     pub fn world_aspect(&self) -> f32 {
         self.world_width / self.world_height
+    }
+
+    /// Returns the particle radius to use for rendering.
+    ///
+    /// When `auto_particle_size` is true, computes a radius that keeps ~4% of the world area
+    /// covered by particle disks, clamped to `[0.5, 12.0]`.  This keeps contrast good across
+    /// the full particle-count range.  When false, returns the manually set `particle_radius`.
+    pub fn effective_particle_radius(&self) -> f32 {
+        if self.auto_particle_size {
+            let area = self.world_width * self.world_height;
+            (0.04 * area / (self.particle_count as f32 * std::f32::consts::PI))
+                .sqrt()
+                .clamp(0.5, 12.0)
+        } else {
+            self.particle_radius
+        }
     }
 
     /// Adjust world size toward [`perf_target_fps`](Self::perf_target_fps) using a proportional
@@ -600,6 +619,7 @@ impl SimulationState {
             friction: 0.5,
             force_scale: 0.007,
             particle_radius: 1.5,
+            auto_particle_size: true,
             attraction,
             palette: PALETTE_DEFAULT,
             paused: false,
@@ -859,6 +879,7 @@ impl SimulationState {
         self.world_width = preset.world_width;
         self.world_height = preset.world_height;
         self.particle_radius = preset.particle_radius;
+        self.auto_particle_size = preset.auto_particle_size;
         self.r_min = preset.r_min;
         self.r_max = preset.r_max;
         self.friction = preset.friction;
@@ -923,6 +944,7 @@ impl SimulationState {
             world_width: self.world_width,
             world_height: self.world_height,
             particle_radius: self.particle_radius,
+            auto_particle_size: self.auto_particle_size,
             r_min: self.r_min,
             r_max: self.r_max,
             friction: self.friction,

@@ -441,6 +441,7 @@ pub fn draw_gallery(
     let mut apply = false;
     egui::Window::new("Preset Gallery")
         .open(gallery_open)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .resizable(true)
         .default_size([560.0, 420.0])
         .show(ctx, |ui| {
@@ -1202,20 +1203,32 @@ pub fn draw_appearance_overlay(
 
     egui::Window::new("Appearance")
         .open(open)
-        .default_pos([10.0, 120.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .resizable(false)
         .min_width(220.0)
         .show(ctx, |ui| {
             // ── Particle Radius ───────────────────────────────────────────────
-            ui.add(
+            ui.checkbox(&mut sim.auto_particle_size, "Auto Radius")
+                .on_hover_text(
+                    "Automatically scale particle radius so that ~4% of world area is covered, \
+                     keeping contrast good across all particle counts.",
+                );
+            ui.add_enabled(
+                !sim.auto_particle_size,
                 egui::Slider::new(&mut sim.particle_radius, 0.5_f32..=12.0_f32)
                     .text("Radius")
                     .step_by(0.5),
             )
             .on_hover_text(
-                "Visual radius of each particle in screen pixels.  \
-                 Scales with camera zoom; independent of world size.",
+                "Visual radius of each particle in world units.  \
+                 Enable Auto Radius to scale automatically with particle count.",
             );
+            if sim.auto_particle_size {
+                ui.label(format!(
+                    "Computed: {:.2}",
+                    sim.effective_particle_radius()
+                ));
+            }
             ui.separator();
 
             // ── UI Theme ──────────────────────────────────────────────────────
