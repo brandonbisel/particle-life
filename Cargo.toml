@@ -1,10 +1,11 @@
 [package]
 name = "ParticleLife"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 authors = ["Brandon Bisel <brandonbisel@gmail.com>"]
 license = "MIT"
 description = "GPU-accelerated particle life simulator with emergent flocking and clustering behaviour"
+repository = "https://github.com/brandonbisel/particle-life"
 
 [dependencies]
 winit      = "0.30"
