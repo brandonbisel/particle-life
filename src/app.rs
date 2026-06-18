@@ -1063,7 +1063,9 @@ impl ApplicationHandler for AppHandler {
                                 .take()
                                 .unwrap_or_else(|| "bench_results.csv".into());
                             match state.benchmark.write_csv(&path) {
-                                Ok(()) => println!("Benchmark results written to {}", path.display()),
+                                Ok(()) => {
+                                    println!("Benchmark results written to {}", path.display())
+                                }
                                 Err(e) => log::error!("Benchmark CSV write failed: {e}"),
                             }
                             event_loop.exit();

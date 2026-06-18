@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(name = "ParticleLife", about = "GPU-accelerated particle life simulator")]
+#[command(
+    name = "ParticleLife",
+    about = "GPU-accelerated particle life simulator"
+)]
 pub struct CliArgs {
     /// Run the full benchmark suite (all presets × particle tiers) and write results to CSV, then exit.
     #[arg(long)]

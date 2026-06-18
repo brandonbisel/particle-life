@@ -305,10 +305,7 @@ pub fn draw_toolbar(
                         }
 
                         if ui
-                            .add_sized(
-                                icon_sz,
-                                egui::SelectableLabel::new(about_open, ph::INFO),
-                            )
+                            .add_sized(icon_sz, egui::SelectableLabel::new(about_open, ph::INFO))
                             .on_hover_text("About Particle Life")
                             .clicked()
                         {
@@ -316,7 +313,13 @@ pub fn draw_toolbar(
                         }
                     });
 
-                    (rv, take_screenshot, toggle_gallery, toggle_appearance, toggle_about)
+                    (
+                        rv,
+                        take_screenshot,
+                        toggle_gallery,
+                        toggle_appearance,
+                        toggle_about,
+                    )
                 })
                 .inner
         });
@@ -2004,8 +2007,7 @@ pub fn draw_about_window(ctx: &egui::Context, open: &mut bool) {
 
             if ui.button("Open Third-Party Licenses").clicked() {
                 // Embedded at compile time so the correct licenses always ship with the binary.
-                const LICENSES_HTML: &str =
-                    include_str!("../THIRD_PARTY_LICENSES.html");
+                const LICENSES_HTML: &str = include_str!("../THIRD_PARTY_LICENSES.html");
                 let path = std::env::temp_dir().join("particle_life_licenses.html");
                 if std::fs::write(&path, LICENSES_HTML).is_ok() {
                     let _ = open::that(&path);
