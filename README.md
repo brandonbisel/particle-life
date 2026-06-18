@@ -10,8 +10,8 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 
 - **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
 - **500K particles** at 25–59 fps at fixed world size depending on particle distribution (Clusters/Chains ~58 fps; Ecosystem ~25 fps with LDS tile and rsqrt force pass; see [Benchmarks](BENCHMARKS.md)); comparable frame rates at 2M with auto-density
-- **8 species** with a fully editable N×N attraction matrix
-- **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
+- **16 species** with a fully editable N×N attraction matrix
+- **4 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall), Matrix (per-species wall attraction)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
 - **Physical world size** — scales the simulation domain; auto-density mode keeps GPU load linear with particle count by growing the world as particles increase
 - **Configurable palette** — five built-in themes (Default, Vivid, Neon, Pastel, Dark), per-species color pickers, and randomize
@@ -44,7 +44,7 @@ Each pair of particles within range `r_max` interacts via a piecewise force:
 - **Repulsion zone** `[0, r_min]`: hard repulsion proportional to overlap — prevents collapse
 - **Interaction zone** `[r_min, r_max]`: species-dependent attraction or repulsion, peaking at `(r_min + r_max) / 2`
 
-The attraction coefficient `A[i,j]` ∈ [-1, 1] is stored in an 8×8 matrix. Randomizing the matrix produces qualitatively different emergent behaviors: orbiting clusters, chain structures, single-species stars, and more.
+The attraction coefficient `A[i,j]` ∈ [-1, 1] is stored in a 16×16 matrix. Randomizing the matrix produces qualitatively different emergent behaviors: orbiting clusters, chain structures, single-species stars, and more.
 
 ### GPU Pipeline (6 compute passes per frame)
 
@@ -183,7 +183,7 @@ src/
 | `particle_radius` | 1.5 | Rendered size in world units |
 | `world_width/height` | 1280 × 720 | Simulation world dimensions; affects interaction density |
 | Max particles | 2,000,000 | Hard GPU buffer limit (~90 MB VRAM) |
-| Max species | 8 | Attraction matrix dimension |
+| Max species | 16 | Attraction matrix dimension |
 
 ## AI Assistance
 
