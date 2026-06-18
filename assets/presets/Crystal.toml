@@ -1,0 +1,23 @@
+name = "Crystal"
+description = "Short interaction range and high damping let four species lock into ordered lattice-like structures; neighbours attract, alternates repel."
+particle_count = 80000
+species_count = 4
+world_width = 1280.0
+world_height = 720.0
+particle_radius = 1.5
+r_min = 0.018
+r_max = 0.052
+friction = 0.7
+force_scale = 0.006
+border_mode = 0
+border_repel_strength = 5.0
+
+# Row-major 4×4 matrix.
+# Cyclic neighbour attraction (0↔1, 1↔2, 2↔3, 3↔0); skip-one pairs repel.
+# Mild self-repulsion keeps each species spread within its sublattice.
+attraction = [
+   -0.2,  0.9, -0.5,  0.9,
+    0.9, -0.2,  0.9, -0.5,
+   -0.5,  0.9, -0.2,  0.9,
+    0.9, -0.5,  0.9, -0.2,
+]

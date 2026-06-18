@@ -264,6 +264,38 @@ pub fn bundled_presets() -> Vec<Preset> {
             "Snakes Rings Ships",
             include_str!("../assets/presets/Snakes Rings Ships.toml"),
         ),
+        (
+            "Grand Chain",
+            include_str!("../assets/presets/Grand Chain.toml"),
+        ),
+        (
+            "Harlequin",
+            include_str!("../assets/presets/Harlequin.toml"),
+        ),
+        (
+            "Crystal",
+            include_str!("../assets/presets/Crystal.toml"),
+        ),
+        (
+            "Storm",
+            include_str!("../assets/presets/Storm.toml"),
+        ),
+        (
+            "Rings",
+            include_str!("../assets/presets/Rings.toml"),
+        ),
+        (
+            "Swarm",
+            include_str!("../assets/presets/Swarm.toml"),
+        ),
+        (
+            "Nebula",
+            include_str!("../assets/presets/Nebula.toml"),
+        ),
+        (
+            "Loners",
+            include_str!("../assets/presets/Loners.toml"),
+        ),
     ];
     sources
         .iter()

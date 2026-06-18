@@ -1,0 +1,25 @@
+name = "Rings"
+description = "Two independent three-species pursuit cycles produce tightly wound orbital rings; the two triplets repel each other, keeping them spatially separated."
+particle_count = 50000
+species_count = 6
+world_width = 1280.0
+world_height = 720.0
+particle_radius = 1.5
+r_min = 0.025
+r_max = 0.09
+friction = 0.42
+force_scale = 0.01
+border_mode = 0
+border_repel_strength = 5.0
+
+# Row-major 6×6 matrix.
+# Triplet A (0→1→2→0): pursuit ring. Triplet B (3→4→5→3): independent pursuit ring.
+# Cross-triplet repulsion keeps the two rings from merging.
+attraction = [
+    0.0,  0.85, -0.45, -0.2, -0.2, -0.2,
+   -0.45, 0.0,  0.85, -0.2, -0.2, -0.2,
+    0.85, -0.45, 0.0, -0.2, -0.2, -0.2,
+   -0.2, -0.2, -0.2,  0.0,  0.85, -0.45,
+   -0.2, -0.2, -0.2, -0.45, 0.0,  0.85,
+   -0.2, -0.2, -0.2,  0.85, -0.45, 0.0,
+]

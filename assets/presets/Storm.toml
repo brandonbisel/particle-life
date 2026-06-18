@@ -1,0 +1,24 @@
+name = "Storm"
+description = "Low friction, high force, and a deeply asymmetric matrix keep six species in perpetual turbulent motion with no stable structures."
+particle_count = 50000
+species_count = 6
+world_width = 1280.0
+world_height = 720.0
+particle_radius = 1.5
+r_min = 0.022
+r_max = 0.12
+friction = 0.25
+force_scale = 0.013
+border_mode = 0
+border_repel_strength = 5.0
+
+# Row-major 6×6 matrix.
+# Strongly asymmetric; sign alternates within each row and column to maximise chaos.
+attraction = [
+     0.5, -0.8,  0.7, -0.6,  0.4, -0.5,
+     0.7,  0.3, -0.8,  0.5, -0.7,  0.4,
+    -0.5,  0.8,  0.4, -0.4,  0.6, -0.7,
+     0.6, -0.4,  0.5,  0.3, -0.6,  0.8,
+    -0.4,  0.6, -0.7,  0.8,  0.4, -0.5,
+     0.8, -0.5,  0.4, -0.7,  0.5,  0.3,
+]
