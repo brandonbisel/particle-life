@@ -70,7 +70,8 @@ struct SimParams {
     // 0 = Wrap (torus), 1 = Repel (spring wall), 2 = Static (hard wall)
     border_mode: u32,
     border_repel_strength: f32, // multiplier on repel wall force; default 0.3
-    _pad: [u32; 2],             // pad to 64 bytes (4 × 16)
+    speed_limit: f32,           // fraction of r_max a particle may travel per frame
+    _pad: u32,                  // pad to 64 bytes (4 × 16)
 }
 
 /// All CPU-side simulation state plus the GPU buffers and compute pipelines.
@@ -90,6 +91,10 @@ pub struct SimulationState {
     pub friction: f32,
     /// Global scale factor applied to all inter-particle forces.
     pub force_scale: f32,
+    /// Maximum distance a particle may travel per frame, as a fraction of `r_max`.
+    /// Prevents tunnelling; 0.25 means a particle at top speed crosses the interaction
+    /// zone in ~4 frames.
+    pub speed_limit: f32,
     /// Particle render radius in world units (used when `auto_particle_size` is false).
     pub particle_radius: f32,
     /// When true, the effective radius is computed from particle count and world area so that
@@ -618,6 +623,7 @@ impl SimulationState {
             r_max: 0.08,
             friction: 0.5,
             force_scale: 0.007,
+            speed_limit: 0.25,
             particle_radius: 1.5,
             auto_particle_size: true,
             attraction,
@@ -793,7 +799,8 @@ impl SimulationState {
                 mouse_range: self.mouse_range,
                 border_mode: self.border_mode,
                 border_repel_strength: self.border_repel_strength,
-                _pad: [0; 2],
+                speed_limit: self.speed_limit,
+                _pad: 0,
             }),
         );
         if self.attraction_dirty.get() {
@@ -984,6 +991,7 @@ impl SimulationState {
         self.r_max = 0.08;
         self.friction = 0.5;
         self.force_scale = 0.007;
+        self.speed_limit = 0.25;
         self.particle_radius = 1.5;
     }
 

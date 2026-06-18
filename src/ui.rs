@@ -939,10 +939,24 @@ pub fn draw_ui(
                     sim.force_scale = force_display / 1000.0;
                 }
             }
+            ui.add(
+                egui::Slider::new(&mut sim.speed_limit, 0.05_f32..=1.0_f32)
+                    .text("Speed Limit")
+                    .step_by(0.05),
+            )
+            .on_hover_text(
+                "Maximum distance a particle may travel per frame, as a fraction of r_max. \
+                 Lower values give interactions more time to act; above ~0.5 fast particles \
+                 begin to tunnel through the interaction zone.",
+            );
+            {
+                let frames = (1.0 / sim.speed_limit).round() as u32;
+                ui.label(format!("        ≈ {frames} frame{} per interaction", if frames == 1 { "" } else { "s" }));
+            }
             if ui
                 .button("Reset Defaults")
                 .on_hover_text(
-                    "Restore r_min, r_max, friction, and force_scale to their default values",
+                    "Restore r_min, r_max, friction, force_scale, and speed_limit to their default values",
                 )
                 .clicked()
             {

@@ -34,7 +34,7 @@ struct SimParams {
     mouse_range:    f32,
     border_mode:             u32,
     border_repel_strength:   f32,
-    _pad2:                   u32,
+    speed_limit:             f32,
     _pad3:                   u32,
 }
 
@@ -287,7 +287,7 @@ fn cs_main(
     }
 
     // CFL guard.
-    let max_speed = params.r_max / params.dt * 0.25;
+    let max_speed = params.r_max / params.dt * params.speed_limit;
     let spd = length(vel);
     vel *= min(1.0, max_speed / max(spd, 1e-6));
 
