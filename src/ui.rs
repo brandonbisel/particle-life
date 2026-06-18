@@ -157,17 +157,18 @@ pub enum Tool {
 }
 
 /// Draw the bottom-center horizontal toolbar: icon tool buttons, Reset View, Screenshot, Gallery,
-/// and Appearance toggle.
+/// Appearance, and About toggles.
 ///
-/// Returns `(reset_view_clicked, take_screenshot, toggle_gallery, toggle_appearance, toolbar_screen_rect)`.
+/// Returns `(reset_view_clicked, take_screenshot, toggle_gallery, toggle_appearance, toggle_about, toolbar_screen_rect)`.
 /// The caller should pass the rect to [`draw_tool_options`] so it can position itself above the toolbar.
 pub fn draw_toolbar(
     ctx: &egui::Context,
     tool: &mut Tool,
     gallery_open: bool,
     appearance_open: bool,
+    about_open: bool,
     bench_running: bool,
-) -> (bool, bool, bool, bool, egui::Rect) {
+) -> (bool, bool, bool, bool, bool, egui::Rect) {
     // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
     let response = egui::Area::new(egui::Id::new("toolbar"))
         .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
@@ -179,6 +180,7 @@ pub fn draw_toolbar(
                     let mut take_screenshot = false;
                     let mut toggle_gallery = false;
                     let mut toggle_appearance = false;
+                    let mut toggle_about = false;
                     let icon_sz = egui::Vec2::splat(32.0);
 
                     ui.horizontal(|ui| {
@@ -301,19 +303,31 @@ pub fn draw_toolbar(
                         {
                             toggle_appearance = true;
                         }
+
+                        if ui
+                            .add_sized(
+                                icon_sz,
+                                egui::SelectableLabel::new(about_open, ph::INFO),
+                            )
+                            .on_hover_text("About Particle Life")
+                            .clicked()
+                        {
+                            toggle_about = true;
+                        }
                     });
 
-                    (rv, take_screenshot, toggle_gallery, toggle_appearance)
+                    (rv, take_screenshot, toggle_gallery, toggle_appearance, toggle_about)
                 })
                 .inner
         });
 
-    let (rv, take_screenshot, toggle_gallery, toggle_appearance) = response.inner;
+    let (rv, take_screenshot, toggle_gallery, toggle_appearance, toggle_about) = response.inner;
     (
         rv,
         take_screenshot,
         toggle_gallery,
         toggle_appearance,
+        toggle_about,
         response.response.rect,
     )
 }
@@ -1951,4 +1965,51 @@ fn fmt_particles(n: usize) -> String {
     } else {
         n.to_string()
     }
+}
+
+// ── About window ──────────────────────────────────────────────────────────────
+
+/// Draw the About window showing version info, repo link, and a button to open
+/// the third-party licenses file.
+pub fn draw_about_window(ctx: &egui::Context, open: &mut bool) {
+    if !*open {
+        return;
+    }
+
+    egui::Window::new("About Particle Life")
+        .open(open)
+        .default_size([360.0, 220.0])
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(egui::RichText::new("Particle Life").size(22.0));
+                ui.label(egui::RichText::new("Version 0.5.0").weak());
+            });
+
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label("Author: Brandon Bisel");
+                ui.separator();
+                ui.label("License: MIT");
+            });
+            ui.add_space(4.0);
+            ui.hyperlink_to(
+                "View on GitHub",
+                "https://github.com/brandonbisel/particle-life",
+            );
+
+            ui.add_space(8.0);
+
+            if ui.button("Open Third-Party Licenses").clicked() {
+                // Embedded at compile time so the correct licenses always ship with the binary.
+                const LICENSES_HTML: &str =
+                    include_str!("../THIRD_PARTY_LICENSES.html");
+                let path = std::env::temp_dir().join("particle_life_licenses.html");
+                if std::fs::write(&path, LICENSES_HTML).is_ok() {
+                    let _ = open::that(&path);
+                }
+            }
+        });
 }

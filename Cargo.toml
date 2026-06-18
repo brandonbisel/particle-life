@@ -23,6 +23,7 @@ egui-phosphor = "0.9.0"
 png = "0.17"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+open = "5"
 
 [profile.release]
 lto = "thin"

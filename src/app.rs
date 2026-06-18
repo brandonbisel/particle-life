@@ -147,6 +147,7 @@ struct AppState {
     // UI overlay state
     matrix_popped_out: bool,
     appearance_open: bool,
+    about_open: bool,
 
     // Pending one-shot actions triggered by keyboard shortcuts
     pending_screenshot: bool,
@@ -331,6 +332,7 @@ impl ApplicationHandler for AppHandler {
             os_dark,
             matrix_popped_out: false,
             appearance_open: false,
+            about_open: false,
             tool: ui::Tool::Pan,
             tool_range: 0.1,
             mouse_strength: 2.0,
@@ -731,6 +733,7 @@ impl ApplicationHandler for AppHandler {
                     let preset_thumbnails = &state.preset_thumbnails;
                     let gallery_open = &mut state.gallery_open;
                     let appearance_open = &mut state.appearance_open;
+                    let about_open = &mut state.about_open;
                     let matrix_popped_out = &mut state.matrix_popped_out;
                     let per_species_count = &state.per_species_count;
                     let appearance = &mut state.appearance;
@@ -776,11 +779,12 @@ impl ApplicationHandler for AppHandler {
                             vsync_available,
                             per_species_count,
                         );
-                        let (rv, ss, tg, ta, toolbar_rect) = ui::draw_toolbar(
+                        let (rv, ss, tg, ta, tab, toolbar_rect) = ui::draw_toolbar(
                             ctx,
                             tool,
                             *gallery_open,
                             *appearance_open,
+                            *about_open,
                             bench_running,
                         );
                         reset_view = rv;
@@ -791,6 +795,10 @@ impl ApplicationHandler for AppHandler {
                         if ta {
                             *appearance_open = !*appearance_open;
                         }
+                        if tab {
+                            *about_open = !*about_open;
+                        }
+                        ui::draw_about_window(ctx, about_open);
                         if *gallery_open
                             && !bench_running
                             && ui::draw_gallery(
