@@ -31,43 +31,60 @@ Symbiosis is the structural inverse of Clusters — exercises cross-species attr
 | Display | 165 Hz |
 | OS | Linux (CachyOS) |
 
-### Summary (current baseline — post-MAX_SPECIES-16 stride fix)
+### Summary (current baseline — v0.6.0)
 
 Average FPS by preset and particle count (vsync off):
 
 | Preset    |   10K |   50K |   100K | 500K |
 |-----------|------:|------:|-------:|-----:|
-| Clusters  | 4,289 | 1,891 |  1,233 |   54 |
-| Chains    | 4,560 | 2,385 |  1,343 |   61 |
-| Ecosystem | 3,015 | 1,243 |    793 |   12 |
-| Symbiosis | 3,256 | 1,249 |    824 |   27 |
+| Clusters  | 6,093 | 1,807 |    765 |   60 |
+| Chains    | 6,240 | 2,386 |    960 |   60 |
+| Ecosystem | 3,355 |   831 |    441 |   31 |
+| Symbiosis | 3,636 | 1,012 |    350 |   34 |
 
-**vs previous baseline (post-rsqrt → post-stride-fix):**
+**vs previous baseline (post-stride-fix → v0.6.0), reliable 500K throughput (frames ÷ wall_secs):**
 
-| Preset    |   10K |   50K |      100K |    500K |
-|-----------|------:|------:|----------:|--------:|
-| Clusters  |  −10% |   +9% |  +70%¹  |    −7% |
-| Chains    |   −6% |   +5% |  +47%¹  |    +3% |
-| Ecosystem |   −4% |  +59%¹ | +122%¹  | −52%² |
-| Symbiosis |  −15% |  +42%¹ | +128%¹  |    −7% |
+| Preset    | 500K tp (v0.6.0) | 500K tp (prev) |      Δ |
+|-----------|------------------:|---------------:|-------:|
+| Clusters  |             60.1 |           54.3 |   +11% |
+| Chains    |             60.1 |           59.5 |    +1% |
+| Ecosystem |             16.0 |            9.7 |  +65%¹ |
+| Symbiosis |             33.8 |           26.7 |   +27% |
 
-¹ avg_fps at ≤100K is inflated by near-zero-dt events (see measurement note above). True frame throughput (frames ÷ 15 s) at 100K: Chains +1%, Ecosystem +20%, Symbiosis +15%, Clusters −4%. At 50K: Chains −4%, Clusters −6%, Ecosystem −5%, Symbiosis −24% vs baseline (partially run-variance).
+¹ Previous Ecosystem 500K captured a hot-cluster phase (9.7 tp, 12 avg fps); prior corrected run was ~25 fps. New run at 16.0 tp / 31 avg fps remains high-variance — Ecosystem avg_fps inflates ~2× at 500K due to fast frames between cluster scatter events.
 
-² Ecosystem 500K: high frame-time variance (min 3, max 24); the 15 s window captured a hot-cluster phase. Treat as a lower bound; prior corrected run was 25 fps.
+avg_fps at ≤100K inflates 1.1–2.1× due to near-zero-dt winit events and is not reliable for cross-run comparison. Use 500K throughput for meaningful benchmarking.
 
-The stride bug introduced by the MAX_SPECIES 8→16 expansion is fixed: the compute shader now indexes the attraction buffer at `subj.species * MAX_SPECIES + entry.species` instead of `subj.species * params.n_species + entry.species`. With `n_species = 6` (preset species count) and a buffer stride of 16, rows 1–4 of every 6-species matrix were landing at wrong offsets — reading zeros or values from adjacent rows. **Symbiosis** (all off-diagonal values positive and relied-upon) and **Chains** (strong off-diagonal predator-prey ring) were most affected; **Clusters** (diagonal-dominant) was least affected since row 0 was always correct.
+**Performance tiers (v0.6.0):**
 
-At the reliable GPU-bound 500K tier: Chains +3%, Clusters −7%, Symbiosis −7%, all within run-to-run variance. Ecosystem 500K captured a hot-cluster phase (12 fps, prior run 25 fps) and is not comparable.
-
-**Performance tiers:**
-
-- **Chains** is now the fastest preset at 500K (61 fps, ~16 ms/frame); the correct predator-prey ring keeps particles in spiraling filaments with well-balanced grid cells.
-- **Clusters** runs slightly behind at 54 fps (~18 ms/frame); correct same-species attraction forms tighter blobs that increase intra-cell density.
-- **Symbiosis** causes particles to aggregate into large mixed blobs, creating moderate grid hotspots. ~2.2× lower throughput than Chains at 500K (27 fps); GPU-bound from ~50K.
-- **Ecosystem** produces the most extreme spatial non-uniformity: the tight fleeing cluster (species 3–5) concentrates hundreds of thousands of particles into a handful of grid cells. At 500K the force pass degrades toward O(n²) locally; high frame-time variance (3–24 fps) persists as the cluster forms and scatters. GPU-bound from ~10K.
-- The 500K tier is GPU-bound for all presets and is the most useful cross-preset comparison.
+- **Chains** and **Clusters** both hit ~60 fps at 500K — the display-rate ceiling at 60 Hz; GPU likely not yet bound at this tier. Both are GPU-bound by ~1–2M particles.
+- **Symbiosis** at 500K: 33.8 tp (~34 fps); mixed-blob aggregation creates moderate grid hotspots. GPU-bound from ~50K.
+- **Ecosystem** at 500K: 16.0 tp / 31 avg fps; high frame-time variance persists as the cluster forms and scatters. GPU-bound from ~10K. The force pass degrades toward O(n²) locally inside the tight cluster.
+- The 500K tier is the most useful cross-preset comparison; ≤100K figures are dominated by CPU/event-loop overhead.
 
 ### Per-run detail
+
+| Preset    | Particles | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
+|-----------|----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
+| Clusters  |    10,000 |   6,093 |     325 |   6,546 |   0.16 | 90,914 |      15.0 | off   |
+| Clusters  |    50,000 |   1,807 |   1,173 |   5,969 |   0.55 | 26,933 |      15.0 | off   |
+| Clusters  |   100,000 |     765 |     532 |   1,281 |   1.31 | 11,289 |      15.0 | off   |
+| Clusters  |   500,000 |      60 |      54 |      65 |  16.65 |    901 |      15.0 | off   |
+| Chains    |    10,000 |   6,240 |   1,555 |   6,695 |   0.16 | 93,258 |      15.0 | off   |
+| Chains    |    50,000 |   2,386 |   1,308 |   4,731 |   0.42 | 35,649 |      15.0 | off   |
+| Chains    |   100,000 |     960 |     316 |   4,945 |   1.04 | 14,346 |      15.0 | off   |
+| Chains    |   500,000 |      60 |      58 |      62 |  16.65 |    901 |      15.0 | off   |
+| Ecosystem |    10,000 |   3,355 |     305 |   6,534 |   0.30 | 47,718 |      15.0 | off   |
+| Ecosystem |    50,000 |     831 |     340 |   1,822 |   1.20 | 11,125 |      15.0 | off   |
+| Ecosystem |   100,000 |     441 |     209 |     751 |   2.27 |  5,954 |      15.0 | off   |
+| Ecosystem |   500,000 |      31 |       4 |      53 |  32.62 |    243 |      15.2 | off   |
+| Symbiosis |    10,000 |   3,636 |     293 |   6,450 |   0.28 | 53,606 |      15.0 | off   |
+| Symbiosis |    50,000 |   1,012 |     263 |   1,485 |   0.99 | 14,957 |      15.0 | off   |
+| Symbiosis |   100,000 |     350 |     226 |     456 |   2.86 |  5,158 |      15.0 | off   |
+| Symbiosis |   500,000 |      34 |      28 |      38 |  29.54 |    507 |      15.0 | off   |
+
+<details>
+<summary>Previous baseline (post-MAX_SPECIES-16 stride fix)</summary>
 
 | Preset    | Particles | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
 |-----------|----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
@@ -87,6 +104,8 @@ At the reliable GPU-bound 500K tier: Chains +3%, Clusters −7%, Symbiosis −7%
 | Symbiosis |    50,000 |   1,249 |     258 |   5,238 |   0.80 |  9,741 |      15.0 | off   |
 | Symbiosis |   100,000 |     824 |     143 |   5,119 |   1.21 |  6,026 |      15.0 | off   |
 | Symbiosis |   500,000 |      27 |      21 |      33 |  37.24 |    400 |      15.0 | off   |
+
+</details>
 
 <details>
 <summary>Previous baseline (post-rsqrt force reformulation)</summary>
