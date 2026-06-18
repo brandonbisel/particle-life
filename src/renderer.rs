@@ -288,10 +288,17 @@ impl WgpuState {
     ///
     /// Doing the sRGB→linear conversion here (once, on the CPU) avoids three `pow()` calls
     /// per vertex in the shader, which measurably hurts throughput at CPU-bound particle counts.
-    pub fn update_palette(&self, palette: &[u32]) {
+    ///
+    /// `visible[i]` controls whether species `i` is rendered; hidden species are uploaded with
+    /// alpha = 0 so the fragment shader discards them without GPU branching.
+    pub fn update_palette(&self, palette: &[u32], visible: &[bool]) {
         let linear: Vec<[f32; 4]> = palette
             .iter()
-            .map(|&p| {
+            .zip(visible.iter().chain(std::iter::repeat(&true)))
+            .map(|(&p, &vis)| {
+                if !vis {
+                    return [0.0, 0.0, 0.0, 0.0];
+                }
                 [
                     srgb_u8_to_linear((p & 0xFF) as u8),
                     srgb_u8_to_linear(((p >> 8) & 0xFF) as u8),

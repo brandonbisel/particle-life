@@ -103,6 +103,11 @@ pub struct SimulationState {
     pub palette: [u32; 16],
     /// When true the simulation clock is frozen; no compute dispatches are issued.
     pub paused: bool,
+    /// One-shot flag set by the UI/keyboard to advance exactly one frame while paused.
+    /// Cleared by `app.rs` immediately after the dispatch completes.
+    pub step_requested: bool,
+    /// Per-species render visibility; hidden species are uploaded with alpha = 0.
+    pub species_visible: [bool; MAX_SPECIES],
     /// Active border behaviour: 0 = Wrap (torus), 1 = Repel (spring wall), 2 = Static (hard wall), 3 = Matrix.
     pub border_mode: u32,
     /// Multiplier applied to the spring-wall force in Repel mode.
@@ -598,6 +603,8 @@ impl SimulationState {
             attraction,
             palette: PALETTE_DEFAULT,
             paused: false,
+            step_requested: false,
+            species_visible: [true; MAX_SPECIES],
             border_mode: 0,
             border_repel_strength: 5.0,
             world_width,
@@ -888,6 +895,7 @@ impl SimulationState {
             }
         }
         self.attraction_dirty.set(true);
+        self.species_visible = [true; MAX_SPECIES];
         if let Some(ref pal) = preset.palette {
             for (i, &c) in pal.iter().enumerate().take(MAX_SPECIES) {
                 self.palette[i] = c;

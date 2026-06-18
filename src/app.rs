@@ -149,6 +149,15 @@ struct AppState {
     appearance_open: bool,
     about_open: bool,
 
+    // Playback controls (session-only; not persisted in presets)
+    /// Multiplier applied to `dt` before each physics dispatch; 1.0 = real-time, 0.05 = 5%.
+    time_scale: f32,
+
+    // --capture mode: run the sim for capture_delay seconds, save a screenshot, then exit.
+    capture_path: Option<std::path::PathBuf>,
+    capture_elapsed: f32,
+    capture_delay: f32,
+
     // Pending one-shot actions triggered by keyboard shortcuts
     pending_screenshot: bool,
 
@@ -277,7 +286,7 @@ impl ApplicationHandler for AppHandler {
                 Err(e) => log::warn!("--matrix: {e}"),
             }
         }
-        renderer.update_palette(&sim.palette);
+        renderer.update_palette(&sim.palette, &sim.species_visible);
         let fit_zoom = compute_fit_zoom(sim.world_width, sim.world_height, size.width, size.height);
         let per_species_count = sim.species_counts();
 
@@ -339,6 +348,10 @@ impl ApplicationHandler for AppHandler {
             spawn_species: None,
             spawn_rate: 50,
             cursor_px: PhysicalPosition::new(0.0, 0.0),
+            time_scale: 1.0,
+            capture_path: None,
+            capture_elapsed: 0.0,
+            capture_delay: 5.0,
             pending_screenshot: false,
             lmb_down: false,
             lmb_egui: false,
@@ -381,6 +394,13 @@ impl ApplicationHandler for AppHandler {
                         .unwrap_or_else(|| "capacity_results.csv".into()),
                 );
             }
+        }
+
+        // Capture mode: record the path/delay and let the frame loop handle the countdown.
+        if let Some(path) = self.cli.capture.clone() {
+            let state = self.state.as_mut().unwrap();
+            state.capture_path = Some(path);
+            state.capture_delay = self.cli.capture_delay;
         }
     }
 
@@ -590,7 +610,11 @@ impl ApplicationHandler for AppHandler {
                             state.camera.center[0] = (state.camera.center[0] - step).max(0.0);
                         }
                         Key::Named(NamedKey::ArrowRight) => {
-                            state.camera.center[0] = (state.camera.center[0] + step).min(1.0);
+                            if state.sim.paused {
+                                state.sim.step_requested = true;
+                            } else {
+                                state.camera.center[0] = (state.camera.center[0] + step).min(1.0);
+                            }
                         }
                         Key::Named(NamedKey::ArrowUp) => {
                             state.camera.center[1] = (state.camera.center[1] + step).min(1.0);
@@ -737,6 +761,7 @@ impl ApplicationHandler for AppHandler {
                     let matrix_popped_out = &mut state.matrix_popped_out;
                     let per_species_count = &state.per_species_count;
                     let appearance = &mut state.appearance;
+                    let time_scale = &mut state.time_scale;
                     let os_dark = state.os_dark;
                     let mut ui_r = ui::UiResponse::default();
                     let mut bench_r = ui::BenchmarkPanelResponse {
@@ -752,7 +777,7 @@ impl ApplicationHandler for AppHandler {
                     let mut reset_view = false;
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r = ui::draw_ui(ctx, sim, bench_running, matrix_popped_out);
+                        ui_r = ui::draw_ui(ctx, sim, bench_running, matrix_popped_out, time_scale);
                         if *matrix_popped_out && ui::draw_matrix_window(ctx, sim, matrix_popped_out)
                         {
                             ui_r.randomize = true;
@@ -863,7 +888,7 @@ impl ApplicationHandler for AppHandler {
                     state.sim.randomize_palette();
                 }
                 if ui_resp.palette_changed || ui_resp.randomize_palette {
-                    state.renderer.update_palette(&state.sim.palette);
+                    state.renderer.update_palette(&state.sim.palette, &state.sim.species_visible);
                 }
                 if should_reset_view {
                     state.camera = Camera::default_view();
@@ -936,7 +961,7 @@ impl ApplicationHandler for AppHandler {
                     );
                     state.camera = Camera::default_view();
                     state.per_species_count = state.sim.species_counts();
-                    state.renderer.update_palette(&state.sim.palette);
+                    state.renderer.update_palette(&state.sim.palette, &state.sim.species_visible);
                 }
                 if ui_resp.import_preset
                     && let Some(path) = rfd::FileDialog::new()
@@ -1006,7 +1031,7 @@ impl ApplicationHandler for AppHandler {
                             state.sim.respawn(state.renderer.queue());
                             state.frame_times.clear();
                             state.per_species_count = state.sim.species_counts();
-                            state.renderer.update_palette(&state.sim.palette);
+                            state.renderer.update_palette(&state.sim.palette, &state.sim.species_visible);
                         }
                         Err(e) => log::warn!("Share code apply failed: {e}"),
                     }
@@ -1226,12 +1251,20 @@ impl ApplicationHandler for AppHandler {
                 }
                 let paint_jobs = state.egui_ctx.tessellate(shapes, pixels_per_point);
 
+                // Frame stepping: temporarily unpause for exactly one dispatch.
+                let stepping = state.sim.paused && state.sim.step_requested;
+                if stepping {
+                    state.sim.paused = false;
+                    state.sim.step_requested = false;
+                }
+
+                let physics_dt = dt * state.time_scale;
                 match state.renderer.render(
                     &paint_jobs,
                     &textures_delta,
                     pixels_per_point,
                     &state.sim,
-                    dt,
+                    physics_dt,
                     cam_center,
                     shader_zoom,
                     renderer::bg_color_from_srgb(state.appearance.bg_color),
@@ -1243,6 +1276,29 @@ impl ApplicationHandler for AppHandler {
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                     Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
                     Err(e) => log::error!("Surface error: {e:?}"),
+                }
+
+                if stepping {
+                    state.sim.paused = true;
+                }
+
+                // Capture mode: count down and take screenshot when delay expires.
+                if state.capture_path.is_some() {
+                    state.capture_elapsed += raw_dt;
+                    if state.capture_elapsed >= state.capture_delay {
+                        let path = state.capture_path.take().unwrap();
+                        let png = state.renderer.capture_png(
+                            &state.sim,
+                            cam_center,
+                            shader_zoom,
+                            renderer::bg_color_from_srgb(state.appearance.bg_color),
+                        );
+                        match std::fs::write(&path, &png) {
+                            Ok(()) => println!("Captured screenshot to {}", path.display()),
+                            Err(e) => log::error!("Capture failed: {e}"),
+                        }
+                        event_loop.exit();
+                    }
                 }
             }
 

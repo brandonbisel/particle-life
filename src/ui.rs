@@ -707,6 +707,7 @@ pub fn draw_ui(
     sim: &mut SimulationState,
     bench_running: bool,
     matrix_popped_out: &mut bool,
+    time_scale: &mut f32,
 ) -> UiResponse {
     let mut resp = UiResponse::default();
 
@@ -751,11 +752,33 @@ pub fn draw_ui(
                 let pause_label = if sim.paused { "Resume" } else { "Pause" };
                 if ui
                     .button(pause_label)
-                    .on_hover_text("Pause or resume the simulation")
+                    .on_hover_text("Pause or resume the simulation (Space)")
                     .clicked()
                 {
                     sim.paused = !sim.paused;
                 }
+                if sim.paused
+                    && ui
+                        .button("Step ▸")
+                        .on_hover_text("Advance one physics frame (→ key)")
+                        .clicked()
+                {
+                    sim.step_requested = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Speed:");
+                ui.add(
+                    egui::Slider::new(time_scale, 0.05_f32..=1.0)
+                        .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                        .custom_parser(|s| {
+                            s.trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)
+                        }),
+                )
+                .on_hover_text(
+                    "Simulation speed relative to real time; slow motion helps reveal \
+                     structure in chaotic presets (Space to pause, → to step)",
+                );
             });
             ui.checkbox(&mut sim.random_species_dist, "Random population")
                 .on_hover_text(
@@ -1033,6 +1056,43 @@ pub fn draw_ui(
                         let pop_tip = if *matrix_popped_out { "Dock matrix into this panel" } else { "Pop out matrix into its own window" };
                         if ui.small_button(pop_icon).on_hover_text(pop_tip).clicked() {
                             resp.matrix_pop_out_toggled = true;
+                        }
+                    });
+
+                    // Species visibility toggles: click a swatch to hide/show that species.
+                    ui.horizontal(|ui| {
+                        ui.label("Show:");
+                        let n = sim.species_count;
+                        for i in 0..n {
+                            let vis = sim.species_visible[i];
+                            let base_color = species_color(i, &sim.palette);
+                            let swatch = if vis {
+                                base_color
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(
+                                    base_color.r() / 3,
+                                    base_color.g() / 3,
+                                    base_color.b() / 3,
+                                    180,
+                                )
+                            };
+                            let mut label = egui::RichText::new(format!("S{}", i + 1))
+                                .color(swatch);
+                            if !vis {
+                                label = label.strikethrough();
+                            }
+                            if ui
+                                .selectable_label(vis, label)
+                                .on_hover_text(if vis {
+                                    format!("Species {} visible — click to hide", i + 1)
+                                } else {
+                                    format!("Species {} hidden — click to show", i + 1)
+                                })
+                                .clicked()
+                            {
+                                sim.species_visible[i] = !sim.species_visible[i];
+                                resp.palette_changed = true;
+                            }
                         }
                     });
 
