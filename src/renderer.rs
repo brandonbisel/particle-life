@@ -8,7 +8,8 @@ use std::mem::size_of;
 use std::sync::Arc;
 use winit::window::Window;
 
-use crate::simulation::{Particle, SimulationState};
+use crate::pipeline_cache;
+use crate::simulation::{MAX_SPECIES, Particle, SimulationState};
 
 /// Convert an sRGB byte triplet to a wgpu linear-light `Color` suitable for use as a
 /// render-pass clear value.
@@ -44,7 +45,10 @@ pub struct WgpuState {
     palette_buf: wgpu::Buffer,
     globals_bind_group: wgpu::BindGroup,
     particle_radius: f32,
+    pipeline_cache: Option<wgpu::PipelineCache>,
+    tile_size: u32,
     immediate_supported: bool,
+    mailbox_supported: bool,
     vsync: bool,
 }
 
@@ -71,18 +75,47 @@ impl WgpuState {
         }))
         .expect("No compatible Vulkan adapter found");
 
-        log::info!("Selected adapter: {:?}", adapter.get_info().name);
+        let info = adapter.get_info();
+        // AMD wavefront = 64; NVIDIA/Intel/Apple warp/SIMD-group = 32.
+        let tile_size: u32 = if info.vendor == 0x1002 { 64 } else { 32 };
+        log::info!(
+            "Selected adapter: {:?} (backend: {:?}, vendor: 0x{:04X}, tile_size: {})",
+            info.name,
+            info.backend,
+            info.vendor,
+            tile_size
+        );
+
+        // Pipeline cache is Vulkan-only in wgpu 24; Metal and D3D12 use OS-managed caches.
+        let cache_feature = if adapter.features().contains(wgpu::Features::PIPELINE_CACHE) {
+            wgpu::Features::PIPELINE_CACHE
+        } else {
+            wgpu::Features::empty()
+        };
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("ParticleLife Device"),
-                required_features: wgpu::Features::empty(),
+                required_features: cache_feature,
                 required_limits: wgpu::Limits::default(),
-                memory_hints: wgpu::MemoryHints::default(),
+                memory_hints: wgpu::MemoryHints::Performance,
             },
             None,
         ))
         .expect("Failed to create wgpu device");
+
+        let pipeline_cache = cache_feature
+            .contains(wgpu::Features::PIPELINE_CACHE)
+            .then(|| {
+                let data = pipeline_cache::load();
+                unsafe {
+                    device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+                        label: Some("pipeline_cache"),
+                        data: data.as_deref(),
+                        fallback: true,
+                    })
+                }
+            });
 
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -92,6 +125,7 @@ impl WgpuState {
             .copied()
             .unwrap_or(caps.formats[0]);
         let immediate_supported = caps.present_modes.contains(&wgpu::PresentMode::Immediate);
+        let mailbox_supported = caps.present_modes.contains(&wgpu::PresentMode::Mailbox);
 
         let size = window.inner_size();
         let surface_config = wgpu::SurfaceConfiguration {
@@ -117,10 +151,10 @@ impl WgpuState {
             mapped_at_creation: false,
         });
 
-        // 8 × vec4<f32> = 128 bytes; holds pre-linearised palette colours for the vertex shader.
+        // MAX_SPECIES × vec4<f32>; holds pre-linearised palette colours for the vertex shader.
         let palette_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Palette"),
-            size: 128,
+            size: (MAX_SPECIES * 16) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -226,7 +260,7 @@ impl WgpuState {
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview: None,
-            cache: None,
+            cache: pipeline_cache.as_ref(),
         });
 
         let state = Self {
@@ -240,40 +274,50 @@ impl WgpuState {
             palette_buf,
             globals_bind_group,
             particle_radius: 3.0,
+            pipeline_cache,
+            tile_size,
             immediate_supported,
+            mailbox_supported,
             vsync: true,
         };
         state.update_globals([0.5, 0.5], 1.0, 1.0, 1.5 / 720.0);
         state
     }
 
-    /// Convert the 8-entry sRGB palette to linear floats and upload to the vertex shader.
+    /// Convert the sRGB palette to linear floats and upload to the vertex shader.
     ///
     /// Doing the sRGB→linear conversion here (once, on the CPU) avoids three `pow()` calls
     /// per vertex in the shader, which measurably hurts throughput at CPU-bound particle counts.
-    pub fn update_palette(&self, palette: &[u32; 8]) {
-        let linear: [[f32; 4]; 8] = std::array::from_fn(|i| {
-            let p = palette[i];
-            [
-                srgb_u8_to_linear((p & 0xFF) as u8),
-                srgb_u8_to_linear(((p >> 8) & 0xFF) as u8),
-                srgb_u8_to_linear(((p >> 16) & 0xFF) as u8),
-                1.0,
-            ]
-        });
+    pub fn update_palette(&self, palette: &[u32]) {
+        let linear: Vec<[f32; 4]> = palette
+            .iter()
+            .map(|&p| {
+                [
+                    srgb_u8_to_linear((p & 0xFF) as u8),
+                    srgb_u8_to_linear(((p >> 8) & 0xFF) as u8),
+                    srgb_u8_to_linear(((p >> 16) & 0xFF) as u8),
+                    1.0,
+                ]
+            })
+            .collect();
         self.queue
             .write_buffer(&self.palette_buf, 0, bytemuck::cast_slice(&linear));
     }
 
-    /// Switch between vsync-on (`Fifo`) and vsync-off (`Immediate`).
+    /// Switch between vsync-on (`Fifo`) and vsync-off.
     ///
-    /// Falls back silently to `Fifo` if `Immediate` is not supported by the adapter,
-    /// in which case `vsync_enabled` will still return `true` after the call.
+    /// When disabling vsync, prefers `Mailbox` (triple-buffered, no tearing) over
+    /// `Immediate` when the adapter supports it.  Falls back silently to `Fifo` if
+    /// neither uncapped mode is available.
     pub fn set_vsync(&mut self, enabled: bool) {
-        let mode = if enabled || !self.immediate_supported {
+        let mode = if enabled {
             wgpu::PresentMode::Fifo
-        } else {
+        } else if self.mailbox_supported {
+            wgpu::PresentMode::Mailbox
+        } else if self.immediate_supported {
             wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::Fifo
         };
         if self.surface_config.present_mode != mode {
             self.surface_config.present_mode = mode;
@@ -282,9 +326,35 @@ impl WgpuState {
         self.vsync = matches!(self.surface_config.present_mode, wgpu::PresentMode::Fifo);
     }
 
-    /// Whether the adapter supports `PresentMode::Immediate` (vsync-off).
+    /// Whether the adapter supports any uncapped present mode (`Mailbox` or `Immediate`).
     pub fn vsync_toggle_available(&self) -> bool {
-        self.immediate_supported
+        self.mailbox_supported || self.immediate_supported
+    }
+
+    /// The LDS tile size selected for the Force compute shader based on GPU vendor.
+    ///
+    /// AMD uses 64 (one full wavefront); all others use 32 (one warp/SIMD-group).
+    pub fn tile_size(&self) -> u32 {
+        self.tile_size
+    }
+
+    /// Borrow the pipeline cache for use when creating compute pipelines.
+    ///
+    /// Returns `None` on Metal and D3D12 backends where wgpu 24 does not expose
+    /// the feature; those platforms use OS-managed shader caches instead.
+    pub fn pipeline_cache(&self) -> Option<&wgpu::PipelineCache> {
+        self.pipeline_cache.as_ref()
+    }
+
+    /// Persist the pipeline cache blob to disk so the next launch skips recompilation.
+    ///
+    /// Silently no-ops if the cache was not created (Metal/D3D12) or if serialisation fails.
+    pub fn save_pipeline_cache(&self) {
+        if let Some(cache) = &self.pipeline_cache
+            && let Some(data) = cache.get_data()
+        {
+            pipeline_cache::save(&data);
+        }
     }
 
     /// Reconfigure the surface for a new window size.  No-ops on zero-area sizes.

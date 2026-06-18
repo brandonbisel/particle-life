@@ -25,9 +25,11 @@ pub const BG_PRESETS: &[(&str, [u8; 3])] = &[
 ];
 
 /// Apply egui visuals for `theme`.  `os_dark` is used when `theme` is `System`.
+/// `overlay_alpha` (0–255) is applied to `window_fill` and `panel_fill` so panels
+/// can be made translucent.
 ///
-/// Call at startup and whenever the theme or OS preference changes.
-pub fn apply_theme(ctx: &egui::Context, theme: config::UiTheme, os_dark: bool) {
+/// Call at startup and whenever the theme, OS preference, or opacity changes.
+pub fn apply_theme(ctx: &egui::Context, theme: config::UiTheme, overlay_alpha: u8, os_dark: bool) {
     match theme {
         config::UiTheme::System => {
             ctx.set_visuals(if os_dark {
@@ -79,6 +81,15 @@ pub fn apply_theme(ctx: &egui::Context, theme: config::UiTheme, os_dark: bool) {
             ctx.set_visuals(v);
         }
     }
+    if overlay_alpha < 255 {
+        let mut vis = ctx.style().visuals.clone();
+        let a = overlay_alpha;
+        let c = vis.window_fill;
+        vis.window_fill = egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+        let c = vis.panel_fill;
+        vis.panel_fill = egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a);
+        ctx.set_visuals(vis);
+    }
 }
 
 // ── UI response ───────────────────────────────────────────────────────────────
@@ -110,6 +121,8 @@ pub struct UiResponse {
     /// Theme or background colour changed; caller should apply the new visuals and
     /// persist `appearance`.
     pub appearance_changed: bool,
+    /// The pop-out / dock button in the Attraction Matrix was clicked.
+    pub matrix_pop_out_toggled: bool,
 }
 
 /// Actions requested by the Performance / benchmark panel.
@@ -143,20 +156,22 @@ pub enum Tool {
     Spawn,
 }
 
-/// Draw the right-side vertical toolbar: icon tool buttons, Reset View, Screenshot, and Gallery.
+/// Draw the bottom-center horizontal toolbar: icon tool buttons, Reset View, Screenshot, Gallery,
+/// Appearance, and About toggles.
 ///
-/// Returns `(reset_view_clicked, take_screenshot, toggle_gallery, toolbar_screen_rect)`.
-/// The caller should pass the rect to [`draw_tool_options`] so it can position itself flush
-/// against the toolbar's left edge.
+/// Returns `(reset_view_clicked, take_screenshot, toggle_gallery, toggle_appearance, toggle_about, toolbar_screen_rect)`.
+/// The caller should pass the rect to [`draw_tool_options`] so it can position itself above the toolbar.
 pub fn draw_toolbar(
     ctx: &egui::Context,
     tool: &mut Tool,
     gallery_open: bool,
+    appearance_open: bool,
+    about_open: bool,
     bench_running: bool,
-) -> (bool, bool, bool, egui::Rect) {
+) -> (bool, bool, bool, bool, bool, egui::Rect) {
     // Use Area+Frame instead of Window so the panel sizes to content with no cached minimum.
     let response = egui::Area::new(egui::Id::new("toolbar"))
-        .anchor(egui::Align2::RIGHT_CENTER, [-10.0, 0.0])
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -10.0])
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::window(ui.style())
@@ -164,122 +179,160 @@ pub fn draw_toolbar(
                     let mut rv = false;
                     let mut take_screenshot = false;
                     let mut toggle_gallery = false;
+                    let mut toggle_appearance = false;
+                    let mut toggle_about = false;
                     let icon_sz = egui::Vec2::splat(32.0);
 
-                    let r = ui
-                        .add_sized(
-                            icon_sz,
-                            egui::SelectableLabel::new(*tool == Tool::Pan, ph::HAND_GRABBING),
-                        )
-                        .on_hover_text("Pan — drag to move the camera");
-                    if r.clicked() {
-                        *tool = Tool::Pan;
-                    }
-
-                    let r = ui
-                        .add_sized(
-                            icon_sz,
-                            egui::SelectableLabel::new(
-                                *tool == Tool::ZoomIn,
-                                ph::MAGNIFYING_GLASS_PLUS,
-                            ),
-                        )
-                        .on_hover_text("Zoom In — click to zoom in centered on the cursor");
-                    if r.clicked() {
-                        *tool = Tool::ZoomIn;
-                    }
-
-                    let r = ui
-                        .add_sized(
-                            icon_sz,
-                            egui::SelectableLabel::new(
-                                *tool == Tool::ZoomOut,
-                                ph::MAGNIFYING_GLASS_MINUS,
-                            ),
-                        )
-                        .on_hover_text("Zoom Out — click to zoom out centered on the cursor");
-                    if r.clicked() {
-                        *tool = Tool::ZoomOut;
-                    }
-
-                    ui.add_enabled_ui(!bench_running, |ui| {
+                    ui.horizontal(|ui| {
                         let r = ui
                             .add_sized(
                                 icon_sz,
-                                egui::SelectableLabel::new(*tool == Tool::Attract, ph::MAGNET),
+                                egui::SelectableLabel::new(*tool == Tool::Pan, ph::HAND_GRABBING),
                             )
-                            .on_hover_text(
-                                "Attract — hold to pull nearby particles toward the cursor",
-                            );
+                            .on_hover_text("Pan — drag to move the camera");
                         if r.clicked() {
-                            *tool = Tool::Attract;
+                            *tool = Tool::Pan;
                         }
 
                         let r = ui
                             .add_sized(
                                 icon_sz,
                                 egui::SelectableLabel::new(
-                                    *tool == Tool::Repel,
-                                    ph::ARROWS_OUT_CARDINAL,
+                                    *tool == Tool::ZoomIn,
+                                    ph::MAGNIFYING_GLASS_PLUS,
                                 ),
                             )
-                            .on_hover_text(
-                                "Repel — hold to push nearby particles away from the cursor",
-                            );
+                            .on_hover_text("Zoom In — click to zoom in centered on the cursor");
                         if r.clicked() {
-                            *tool = Tool::Repel;
+                            *tool = Tool::ZoomIn;
                         }
 
                         let r = ui
                             .add_sized(
                                 icon_sz,
-                                egui::SelectableLabel::new(*tool == Tool::Spawn, ph::SPARKLE),
+                                egui::SelectableLabel::new(
+                                    *tool == Tool::ZoomOut,
+                                    ph::MAGNIFYING_GLASS_MINUS,
+                                ),
                             )
-                            .on_hover_text("Spawn — hold to emit new particles at the cursor");
+                            .on_hover_text("Zoom Out — click to zoom out centered on the cursor");
                         if r.clicked() {
-                            *tool = Tool::Spawn;
+                            *tool = Tool::ZoomOut;
+                        }
+
+                        ui.add_enabled_ui(!bench_running, |ui| {
+                            let r = ui
+                                .add_sized(
+                                    icon_sz,
+                                    egui::SelectableLabel::new(*tool == Tool::Attract, ph::MAGNET),
+                                )
+                                .on_hover_text(
+                                    "Attract — hold to pull nearby particles toward the cursor",
+                                );
+                            if r.clicked() {
+                                *tool = Tool::Attract;
+                            }
+
+                            let r = ui
+                                .add_sized(
+                                    icon_sz,
+                                    egui::SelectableLabel::new(
+                                        *tool == Tool::Repel,
+                                        ph::ARROWS_OUT_CARDINAL,
+                                    ),
+                                )
+                                .on_hover_text(
+                                    "Repel — hold to push nearby particles away from the cursor",
+                                );
+                            if r.clicked() {
+                                *tool = Tool::Repel;
+                            }
+
+                            let r = ui
+                                .add_sized(
+                                    icon_sz,
+                                    egui::SelectableLabel::new(*tool == Tool::Spawn, ph::SPARKLE),
+                                )
+                                .on_hover_text("Spawn — hold to emit new particles at the cursor");
+                            if r.clicked() {
+                                *tool = Tool::Spawn;
+                            }
+                        });
+
+                        ui.separator();
+
+                        if ui
+                            .add_sized(icon_sz, egui::Button::new(ph::ARROWS_COUNTER_CLOCKWISE))
+                            .on_hover_text("Reset view to default zoom and position")
+                            .clicked()
+                        {
+                            rv = true;
+                        }
+
+                        if ui
+                            .add_sized(icon_sz, egui::Button::new(ph::CAMERA))
+                            .on_hover_text("Save a screenshot to the screenshots/ folder")
+                            .clicked()
+                        {
+                            take_screenshot = true;
+                        }
+
+                        if ui
+                            .add_enabled_ui(!bench_running, |ui| {
+                                ui.add_sized(
+                                    icon_sz,
+                                    egui::SelectableLabel::new(gallery_open, ph::IMAGES),
+                                )
+                                .on_hover_text("Preset Gallery — browse presets visually")
+                                .clicked()
+                            })
+                            .inner
+                        {
+                            toggle_gallery = true;
+                        }
+
+                        ui.separator();
+
+                        if ui
+                            .add_sized(
+                                icon_sz,
+                                egui::SelectableLabel::new(appearance_open, ph::PALETTE),
+                            )
+                            .on_hover_text("Appearance — colours, theme, and opacity")
+                            .clicked()
+                        {
+                            toggle_appearance = true;
+                        }
+
+                        if ui
+                            .add_sized(icon_sz, egui::SelectableLabel::new(about_open, ph::INFO))
+                            .on_hover_text("About Particle Life")
+                            .clicked()
+                        {
+                            toggle_about = true;
                         }
                     });
 
-                    ui.separator();
-
-                    if ui
-                        .add_sized(icon_sz, egui::Button::new(ph::ARROWS_COUNTER_CLOCKWISE))
-                        .on_hover_text("Reset view to default zoom and position")
-                        .clicked()
-                    {
-                        rv = true;
-                    }
-
-                    if ui
-                        .add_sized(icon_sz, egui::Button::new(ph::CAMERA))
-                        .on_hover_text("Save a screenshot to the screenshots/ folder")
-                        .clicked()
-                    {
-                        take_screenshot = true;
-                    }
-
-                    if ui
-                        .add_enabled_ui(!bench_running, |ui| {
-                            ui.add_sized(
-                                icon_sz,
-                                egui::SelectableLabel::new(gallery_open, ph::IMAGES),
-                            )
-                            .on_hover_text("Preset Gallery — browse presets visually")
-                            .clicked()
-                        })
-                        .inner
-                    {
-                        toggle_gallery = true;
-                    }
-
-                    (rv, take_screenshot, toggle_gallery)
+                    (
+                        rv,
+                        take_screenshot,
+                        toggle_gallery,
+                        toggle_appearance,
+                        toggle_about,
+                    )
                 })
                 .inner
         });
 
-    let (rv, take_screenshot, toggle_gallery) = response.inner;
-    (rv, take_screenshot, toggle_gallery, response.response.rect)
+    let (rv, take_screenshot, toggle_gallery, toggle_appearance, toggle_about) = response.inner;
+    (
+        rv,
+        take_screenshot,
+        toggle_gallery,
+        toggle_appearance,
+        toggle_about,
+        response.response.rect,
+    )
 }
 
 /// Draw the floating tool-options panel when a parametric tool is active.
@@ -297,18 +350,18 @@ pub fn draw_tool_options(
     spawn_species: &mut Option<usize>,
     spawn_rate: &mut u32,
     n_species: usize,
-    palette: &[u32; 8],
+    palette: &[u32],
 ) {
     if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
         return;
     }
 
-    // Anchor the panel's right edge 5px to the left of the toolbar.
-    let vp_width = ctx.screen_rect().width();
-    let x_offset = -(vp_width - toolbar_rect.left() + 5.0);
+    // Anchor the panel's bottom edge 5px above the top of the bottom toolbar.
+    let screen_h = ctx.screen_rect().height();
+    let y_offset = -(screen_h - toolbar_rect.top()) - 5.0;
 
     egui::Area::new(egui::Id::new("tool_options"))
-        .anchor(egui::Align2::RIGHT_CENTER, [x_offset, 0.0])
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, y_offset])
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::window(ui.style()).show(ui, |ui| match tool {
@@ -494,52 +547,84 @@ fn attraction_cell_color(v: f32) -> egui::Color32 {
 }
 
 /// Vivid palette — saturated primary hues (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_VIVID: [u32; 8] = [
-    0xFF3232DC, // red    (220, 50, 50)
-    0xFF32DC32, // green  (50, 220, 50)
-    0xFFDC5032, // blue   (50, 80, 220)
-    0xFF28C8DC, // yellow (220, 200, 40)
-    0xFFDC28A0, // purple (160, 40, 220)
-    0xFFD2D228, // cyan   (40, 210, 210)
-    0xFF1E82DC, // orange (220, 130, 30)
-    0xFFB446DC, // pink   (220, 70, 180)
+pub const PALETTE_VIVID: [u32; 16] = [
+    0xFF3232DC, // red         (220, 50, 50)
+    0xFF32DC32, // green       (50, 220, 50)
+    0xFFDC5032, // blue        (50, 80, 220)
+    0xFF28C8DC, // yellow      (220, 200, 40)
+    0xFFDC28A0, // purple      (160, 40, 220)
+    0xFFD2D228, // cyan        (40, 210, 210)
+    0xFF1E82DC, // orange      (220, 130, 30)
+    0xFFB446DC, // pink        (220, 70, 180)
+    0xFF3296DC, // teal        (220, 150, 50)
+    0xFF96DC32, // lime        (50, 220, 150)
+    0xFFDC9632, // indigo      (50, 150, 220)
+    0xFF32DCAA, // amber       (170, 220, 50)
+    0xFFDC3264, // magenta     (100, 50, 220)
+    0xFF64DC32, // mint        (50, 220, 100)
+    0xFF3264DC, // deep-orange (220, 100, 50)
+    0xFFAA32DC, // chartreuse  (220, 50, 170)
 ];
 /// Neon palette — maximum-brightness electric colours (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_NEON: [u32; 8] = [
-    0xFF1414FF, // neon-red     (255, 20, 20)
-    0xFF14FF14, // neon-green   (20, 255, 20)
-    0xFFFF7814, // neon-blue    (20, 120, 255)
-    0xFF00F0FF, // neon-yellow  (255, 240, 0)
-    0xFFF000FF, // neon-magenta (255, 0, 240)
-    0xFFFFF000, // neon-cyan    (0, 240, 255)
-    0xFF008CFF, // neon-orange  (255, 140, 0)
-    0xFF00FF96, // neon-lime    (150, 255, 0)
+pub const PALETTE_NEON: [u32; 16] = [
+    0xFF1414FF, // neon-red        (255, 20, 20)
+    0xFF14FF14, // neon-green      (20, 255, 20)
+    0xFFFF7814, // neon-blue       (20, 120, 255)
+    0xFF00F0FF, // neon-yellow     (255, 240, 0)
+    0xFFF000FF, // neon-magenta    (255, 0, 240)
+    0xFFFFF000, // neon-cyan       (0, 240, 255)
+    0xFF008CFF, // neon-orange     (255, 140, 0)
+    0xFF00FF96, // neon-lime       (150, 255, 0)
+    0xFF5050FF, // neon-rose       (255, 80, 80)
+    0xFF50FF50, // neon-spring     (80, 255, 80)
+    0xFFFF5050, // neon-azure      (80, 80, 255)
+    0xFF00AAFF, // neon-gold       (255, 170, 0)
+    0xFFAA00FF, // neon-violet     (255, 0, 170)
+    0xFFFFAA00, // neon-teal       (0, 170, 255)
+    0xFF0050FF, // neon-amber      (255, 80, 0)
+    0xFF0096FF, // neon-chartreuse (255, 150, 0)
 ];
 /// Pastel palette — soft, desaturated tints (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_PASTEL: [u32; 8] = [
-    0xFFB4B4FF, // pastel-red    (255, 180, 180)
-    0xFFB4FFB4, // pastel-green  (180, 255, 180)
-    0xFFFFC3B4, // pastel-blue   (180, 195, 255)
-    0xFFB4FAFF, // pastel-yellow (255, 250, 180)
-    0xFFFFB4E1, // pastel-purple (225, 180, 255)
-    0xFFF5F5B4, // pastel-cyan   (180, 245, 245)
-    0xFFB4DCFF, // pastel-orange (255, 220, 180)
-    0xFFE1B4F5, // pastel-pink   (245, 180, 225)
+pub const PALETTE_PASTEL: [u32; 16] = [
+    0xFFB4B4FF, // pastel-red       (255, 180, 180)
+    0xFFB4FFB4, // pastel-green     (180, 255, 180)
+    0xFFFFC3B4, // pastel-blue      (180, 195, 255)
+    0xFFB4FAFF, // pastel-yellow    (255, 250, 180)
+    0xFFFFB4E1, // pastel-purple    (225, 180, 255)
+    0xFFF5F5B4, // pastel-cyan      (180, 245, 245)
+    0xFFB4DCFF, // pastel-orange    (255, 220, 180)
+    0xFFE1B4F5, // pastel-pink      (245, 180, 225)
+    0xFFB4D4FF, // pastel-rose      (255, 212, 180)
+    0xFFD4FFB4, // pastel-mint      (180, 255, 212)
+    0xFFFFD4B4, // pastel-periwinkle(180, 212, 255)
+    0xFFB4FFE8, // pastel-lemon     (232, 255, 180)
+    0xFFFFB4C8, // pastel-lilac     (200, 180, 255)
+    0xFFE8FFB4, // pastel-seafoam   (180, 255, 232)
+    0xFFB4C8FF, // pastel-peach     (255, 200, 180)
+    0xFFC8B4FF, // pastel-butter    (255, 180, 200)
 ];
 /// Dark palette — deep, low-luminance tones (sRGB packed `0xFF_BB_GG_RR`).
-pub const PALETTE_DARK: [u32; 8] = [
-    0xFF1E1E96, // dark-red    (150, 30, 30)
-    0xFF1E961E, // dark-green  (30, 150, 30)
-    0xFFA0321E, // dark-blue   (30, 50, 160)
-    0xFF1482A0, // dark-amber  (160, 130, 20)
-    0xFFA01464, // dark-purple (100, 20, 160)
-    0xFF828214, // dark-teal   (20, 130, 130)
-    0xFF145AA0, // dark-orange (160, 90, 20)
-    0xFF6E1E96, // dark-pink   (150, 30, 110)
+pub const PALETTE_DARK: [u32; 16] = [
+    0xFF1E1E96, // dark-red       (150, 30, 30)
+    0xFF1E961E, // dark-green     (30, 150, 30)
+    0xFFA0321E, // dark-blue      (30, 50, 160)
+    0xFF1482A0, // dark-amber     (160, 130, 20)
+    0xFFA01464, // dark-purple    (100, 20, 160)
+    0xFF828214, // dark-teal      (20, 130, 130)
+    0xFF145AA0, // dark-orange    (160, 90, 20)
+    0xFF6E1E96, // dark-pink      (150, 30, 110)
+    0xFF321E96, // dark-crimson   (150, 30, 50)
+    0xFF1E9650, // dark-emerald   (50, 150, 30)
+    0xFF503296, // dark-indigo    (30, 50, 80)
+    0xFF1496C8, // dark-gold      (200, 150, 20)
+    0xFF961450, // dark-maroon    (80, 20, 150)
+    0xFF50821E, // dark-forest    (30, 130, 80)
+    0xFF144696, // dark-brown     (150, 70, 20)
+    0xFF50326E, // dark-plum      (110, 50, 80)
 ];
 
 /// All named palette themes in display order for the Theme combo-box.
-pub const PALETTE_THEMES: &[(&str, [u32; 8])] = &[
+pub const PALETTE_THEMES: &[(&str, [u32; 16])] = &[
     ("Default", PALETTE_DEFAULT),
     ("Vivid", PALETTE_VIVID),
     ("Neon", PALETTE_NEON),
@@ -606,7 +691,7 @@ pub fn load_preset_thumbnails(
 // ── Palette helpers ───────────────────────────────────────────────────────────
 
 /// Extract an egui `Color32` from a packed sRGB `0xFF_BB_GG_RR` palette entry.
-fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
+fn species_color(idx: usize, palette: &[u32]) -> egui::Color32 {
     let packed = palette[idx];
     egui::Color32::from_rgb(
         (packed & 0xFF) as u8,
@@ -615,40 +700,44 @@ fn species_color(idx: usize, palette: &[u32; 8]) -> egui::Color32 {
     )
 }
 
-/// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border.
+/// Draw the main "Particle Life" settings panel: particles, species, physics, presets, border,
+/// and attraction matrix.  Appearance / palette settings live in [`draw_appearance_overlay`].
 pub fn draw_ui(
     ctx: &egui::Context,
     sim: &mut SimulationState,
-    appearance: &mut config::AppearanceConfig,
     bench_running: bool,
+    matrix_popped_out: &mut bool,
 ) -> UiResponse {
     let mut resp = UiResponse::default();
 
+    // Wide enough for 6 default species columns without triggering the horizontal scrollbar.
+    // Each cell ≈ col_w + Frame/DragValue padding.  Add row-label col, window chrome, and
+    // the outer vertical-scrollbar width (8 px) so the horizontal scroll never appears.
+    let matrix_default_cols = 6_f32;
+    let cell_w = 36.0 + 28.0; // col_width + margins/padding at ≤8 species
+    let min_w = matrix_default_cols * cell_w + 56.0; // row-label + chrome + vert-scrollbar gutter
+
     egui::Window::new("Particle Life")
-        .anchor(egui::Align2::LEFT_TOP, [10.0, 10.0])
+        .default_pos([10.0, 10.0])
+        .resizable(true)
+        .min_width(min_w)
         .show(ctx, |ui| {
             if bench_running {
                 ui.disable();
             }
+            egui::ScrollArea::vertical()
+                .max_height(ctx.screen_rect().height() - 30.0)
+                .show(ui, |ui| {
             ui.add(
                 egui::Slider::new(&mut sim.particle_count, 100..=2_000_000)
                     .text("Particles")
                     .logarithmic(true),
             )
             .on_hover_text("Total number of particles — respawn required to take effect");
-            ui.add(egui::Slider::new(&mut sim.species_count, 2..=8).text("Species"))
+            ui.add(egui::Slider::new(&mut sim.species_count, 2..=MAX_SPECIES).text("Species"))
                 .on_hover_text(
                     "Number of distinct species — each has a unique color and interaction profile; respawn required",
                 );
-            ui.add(
-                egui::Slider::new(&mut sim.particle_radius, 0.5_f32..=12.0_f32)
-                    .text("Radius")
-                    .step_by(0.5),
-            )
-            .on_hover_text(
-                "Visual radius of each particle in screen pixels.  \
-                 Scales with camera zoom; independent of world size.",
-            );
             ui.horizontal(|ui| {
                 if ui
                     .button("Respawn")
@@ -674,8 +763,9 @@ pub fn draw_ui(
                      instead of equal shares",
                 );
 
-            ui.separator();
-
+            egui::CollapsingHeader::new("World Size")
+                .default_open(false)
+                .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label("World size:");
                 ui.checkbox(&mut sim.auto_density, "Auto-density")
@@ -761,9 +851,11 @@ pub fn draw_ui(
                     resp.match_win = true;
                 }
             });
+                });   // CollapsingHeader (World Size)
 
-            ui.separator();
-
+            egui::CollapsingHeader::new("Physics")
+                .default_open(false)
+                .show(ui, |ui| {
             ui.add(
                 egui::Slider::new(&mut sim.r_min, 0.001_f32..=0.1_f32)
                     .text("r_min")
@@ -806,6 +898,7 @@ pub fn draw_ui(
             {
                 sim.reset_params();
             }
+                });   // CollapsingHeader (Physics)
 
             ui.separator();
 
@@ -819,14 +912,22 @@ pub fn draw_ui(
                     .on_hover_text("Repel — particles are pushed back from the world boundary");
                 ui.radio_value(&mut sim.border_mode, 2u32, "Static")
                     .on_hover_text("Static — particles stop at the world boundary (hard wall)");
+                if ui
+                    .radio_value(&mut sim.border_mode, 3u32, "Matrix")
+                    .on_hover_text("Matrix — per-species wall force set in the Attraction Matrix below")
+                    .clicked()
+                {
+                    sim.randomize_wall_row();
+                }
             });
-            if sim.border_mode == 1 {
+            if sim.border_mode == 1 || sim.border_mode == 3 {
+                let label = if sim.border_mode == 3 { "Wall Force" } else { "Repel Force" };
                 ui.add(
                     egui::Slider::new(&mut sim.border_repel_strength, 0.1..=30.0)
-                        .text("Repel Force")
+                        .text(label)
                         .step_by(0.1),
                 )
-                .on_hover_text("Strength of the boundary repulsion spring");
+                .on_hover_text("Global scale for boundary spring force");
             }
 
             ui.separator();
@@ -912,178 +1013,41 @@ pub fn draw_ui(
                     ui.data_mut(|d| d.insert_temp(paste_id, paste));
                 });
 
-            ui.separator();
-
-            egui::CollapsingHeader::new("Palette")
-                .default_open(false)
-                .show(ui, |ui| {
-                    // Theme picker
-                    ui.horizontal(|ui| {
-                        egui::ComboBox::from_label("Theme")
-                            .selected_text(
-                                PALETTE_THEMES
-                                    .iter()
-                                    .find(|(_, p)| p == &sim.palette)
-                                    .map(|(n, _)| *n)
-                                    .unwrap_or("Custom"),
-                            )
-                            .show_ui(ui, |ui| {
-                                for &(name, theme) in PALETTE_THEMES {
-                                    if ui.selectable_label(sim.palette == theme, name).clicked() {
-                                        sim.palette = theme;
-                                        resp.palette_changed = true;
-                                    }
-                                }
-                            });
-                        if ui
-                            .button("Randomize")
-                            .on_hover_text("Generate a new random palette for all active species")
-                            .clicked()
-                        {
-                            // palette is randomized by the caller via UiResponse
-                            resp.palette_changed = true;
-                            resp.randomize_palette = true;
-                        }
-                    });
-
-                    ui.separator();
-
-                    // Per-species colour pickers
-                    let n = sim.species_count;
-                    ui.horizontal_wrapped(|ui| {
-                        for i in 0..n {
-                            let mut color = species_color(i, &sim.palette);
-                            let label = format!("S{}", i + 1);
-                            ui.vertical(|ui| {
-                                ui.label(&label);
-                                if egui::color_picker::color_edit_button_srgba(
-                                    ui,
-                                    &mut color,
-                                    egui::color_picker::Alpha::Opaque,
-                                )
-                                .changed()
-                                {
-                                    let r = color.r() as u32;
-                                    let g = color.g() as u32;
-                                    let b = color.b() as u32;
-                                    sim.palette[i] = 0xFF00_0000 | (b << 16) | (g << 8) | r;
-                                    resp.palette_changed = true;
-                                }
-                            });
-                        }
-                    });
-                });
-
-            ui.separator();
-
-            egui::CollapsingHeader::new("Appearance")
-                .default_open(false)
-                .show(ui, |ui| {
-                    let theme_name = |t: config::UiTheme| match t {
-                        config::UiTheme::System => "System",
-                        config::UiTheme::Dark => "Dark",
-                        config::UiTheme::Light => "Light",
-                        config::UiTheme::Midnight => "Midnight",
-                        config::UiTheme::Nord => "Nord",
-                        config::UiTheme::Catppuccin => "Catppuccin",
-                    };
-                    ui.horizontal(|ui| {
-                        egui::ComboBox::from_label("UI Theme")
-                            .selected_text(theme_name(appearance.ui_theme))
-                            .show_ui(ui, |ui| {
-                                for t in [
-                                    config::UiTheme::System,
-                                    config::UiTheme::Dark,
-                                    config::UiTheme::Light,
-                                    config::UiTheme::Midnight,
-                                    config::UiTheme::Nord,
-                                    config::UiTheme::Catppuccin,
-                                ] {
-                                    let attribution = match t {
-                                        config::UiTheme::Nord => {
-                                            Some("Nord palette by Arctic Ice Studio — nordtheme.com")
-                                        }
-                                        config::UiTheme::Catppuccin => Some(
-                                            "Catppuccin Mocha palette by the Catppuccin org — catppuccin.com",
-                                        ),
-                                        _ => None,
-                                    };
-                                    let label = ui.selectable_label(
-                                        appearance.ui_theme == t,
-                                        theme_name(t),
-                                    );
-                                    let label = if let Some(a) = attribution {
-                                        label.on_hover_text(a)
-                                    } else {
-                                        label
-                                    };
-                                    if label.clicked() {
-                                        appearance.ui_theme = t;
-                                        resp.appearance_changed = true;
-                                    }
-                                }
-                            });
-                    });
-
-                    ui.separator();
-
-                    ui.label("Background:");
-                    ui.horizontal(|ui| {
-                        let current_preset = BG_PRESETS
-                            .iter()
-                            .find(|(_, c)| c == &appearance.bg_color)
-                            .map(|(n, _)| *n)
-                            .unwrap_or("Custom");
-                        egui::ComboBox::from_id_salt("bg_preset")
-                            .selected_text(current_preset)
-                            .show_ui(ui, |ui| {
-                                for &(name, color) in BG_PRESETS {
-                                    if ui
-                                        .selectable_label(appearance.bg_color == color, name)
-                                        .clicked()
-                                    {
-                                        appearance.bg_color = color;
-                                        resp.appearance_changed = true;
-                                    }
-                                }
-                            });
-                        let mut c32 = egui::Color32::from_rgb(
-                            appearance.bg_color[0],
-                            appearance.bg_color[1],
-                            appearance.bg_color[2],
-                        );
-                        if egui::color_picker::color_edit_button_srgba(
-                            ui,
-                            &mut c32,
-                            egui::color_picker::Alpha::Opaque,
-                        )
-                        .changed()
-                        {
-                            appearance.bg_color = [c32.r(), c32.g(), c32.b()];
-                            resp.appearance_changed = true;
-                        }
-                    });
-                });
 
             ui.separator();
 
             egui::CollapsingHeader::new("Attraction Matrix")
                 .default_open(true)
                 .show(ui, |ui| {
-                    if ui
-                        .button("Randomize Matrix")
-                        .on_hover_text(
-                            "Fill the attraction matrix with random values; particles are not moved",
-                        )
-                        .clicked()
-                    {
-                        resp.randomize = true;
-                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button("Randomize Matrix")
+                            .on_hover_text(
+                                "Fill the attraction matrix with random values; particles are not moved",
+                            )
+                            .clicked()
+                        {
+                            resp.randomize = true;
+                        }
+                        let pop_icon = if *matrix_popped_out { ph::ARROWS_IN } else { ph::ARROWS_OUT };
+                        let pop_tip = if *matrix_popped_out { "Dock matrix into this panel" } else { "Pop out matrix into its own window" };
+                        if ui.small_button(pop_icon).on_hover_text(pop_tip).clicked() {
+                            resp.matrix_pop_out_toggled = true;
+                        }
+                    });
+
+                    if *matrix_popped_out {
+                        ui.label("(Matrix is in a separate window)");
+                    } else {
 
                     let n = sim.species_count;
+                    let col_width = if n <= 8 { 36.0 } else { 22.0 };
 
+                    egui::ScrollArea::horizontal()
+                        .id_salt("attraction_scroll")
+                        .show(ui, |ui| {
                     egui::Grid::new("attraction_grid")
-                        .min_col_width(36.0)
+                        .min_col_width(col_width)
                         .show(ui, |ui| {
                             // Header row: blank corner + one label per column species
                             ui.label("");
@@ -1109,9 +1073,359 @@ pub fn draw_ui(
                                                     &mut sim.attraction[i * MAX_SPECIES + j],
                                                 )
                                                 .range(-1.0_f32..=1.0_f32)
-                                                .speed(0.01),
+                                                .speed(0.01)
+                                                .custom_formatter(|n, _| {
+                                                    if n >= 0.0 {
+                                                        format!(" {n:.4}")
+                                                    } else {
+                                                        format!("{n:.4}")
+                                                    }
+                                                })
+                                                .custom_parser(|s| s.trim().parse().ok()),
                                             );
                                             if resp.changed() {
+                                                sim.mark_attraction_dirty();
+                                            }
+                                        });
+                                }
+                                ui.end_row();
+                            }
+
+                            // Wall row: only visible in Matrix border mode.
+                            if sim.border_mode == 3 {
+                                ui.colored_label(egui::Color32::GRAY, "Wall");
+                                for j in 0..n {
+                                    let bg = attraction_cell_color(sim.attraction[MAX_SPECIES * MAX_SPECIES + j]);
+                                    egui::Frame::new()
+                                        .fill(bg)
+                                        .inner_margin(egui::Margin::same(2))
+                                        .show(ui, |ui| {
+                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
+                                                egui::Color32::TRANSPARENT;
+                                            let resp = ui.add(
+                                                egui::DragValue::new(&mut sim.attraction[MAX_SPECIES * MAX_SPECIES + j])
+                                                    .range(-1.0_f32..=1.0_f32)
+                                                    .speed(0.01)
+                                                    .fixed_decimals(4),
+                                            );
+                                            if resp.changed() {
+                                                sim.mark_attraction_dirty();
+                                            }
+                                        });
+                                }
+                                ui.end_row();
+                            }
+                        });
+                    });   // ScrollArea (horizontal, attraction matrix)
+                    }   // else: matrix not popped out
+                });   // CollapsingHeader (Attraction Matrix)
+            });   // ScrollArea::vertical (outer)
+        }); // Window
+
+    resp
+}
+
+/// Draw the dedicated Appearance panel: palette colours, UI theme, overlay opacity, background.
+///
+/// `open` is toggled by the toolbar Appearance button; the window has no built-in close button.
+pub fn draw_appearance_overlay(
+    ctx: &egui::Context,
+    sim: &mut SimulationState,
+    appearance: &mut config::AppearanceConfig,
+    os_dark: bool,
+    open: &mut bool,
+) -> UiResponse {
+    let mut resp = UiResponse::default();
+    if !*open {
+        return resp;
+    }
+
+    egui::Window::new("Appearance")
+        .open(open)
+        .default_pos([10.0, 120.0])
+        .resizable(false)
+        .min_width(220.0)
+        .show(ctx, |ui| {
+            // ── Particle Radius ───────────────────────────────────────────────
+            ui.add(
+                egui::Slider::new(&mut sim.particle_radius, 0.5_f32..=12.0_f32)
+                    .text("Radius")
+                    .step_by(0.5),
+            )
+            .on_hover_text(
+                "Visual radius of each particle in screen pixels.  \
+                 Scales with camera zoom; independent of world size.",
+            );
+            ui.separator();
+
+            // ── UI Theme ──────────────────────────────────────────────────────
+            let theme_name = |t: config::UiTheme| match t {
+                config::UiTheme::System => "System",
+                config::UiTheme::Dark => "Dark",
+                config::UiTheme::Light => "Light",
+                config::UiTheme::Midnight => "Midnight",
+                config::UiTheme::Nord => "Nord",
+                config::UiTheme::Catppuccin => "Catppuccin",
+            };
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_label("UI Theme")
+                    .selected_text(theme_name(appearance.ui_theme))
+                    .show_ui(ui, |ui| {
+                        for t in [
+                            config::UiTheme::System,
+                            config::UiTheme::Dark,
+                            config::UiTheme::Light,
+                            config::UiTheme::Midnight,
+                            config::UiTheme::Nord,
+                            config::UiTheme::Catppuccin,
+                        ] {
+                            let attribution = match t {
+                                config::UiTheme::Nord => {
+                                    Some("Nord palette by Arctic Ice Studio — nordtheme.com")
+                                }
+                                config::UiTheme::Catppuccin => Some(
+                                    "Catppuccin Mocha palette by the Catppuccin org — catppuccin.com",
+                                ),
+                                _ => None,
+                            };
+                            let label =
+                                ui.selectable_label(appearance.ui_theme == t, theme_name(t));
+                            let label = if let Some(a) = attribution {
+                                label.on_hover_text(a)
+                            } else {
+                                label
+                            };
+                            if label.clicked() {
+                                appearance.ui_theme = t;
+                                resp.appearance_changed = true;
+                            }
+                        }
+                    });
+            });
+
+            // ── Overlay Opacity ───────────────────────────────────────────────
+            let mut opacity_pct = appearance.overlay_alpha as f32 / 2.55;
+            if ui
+                .add(
+                    egui::Slider::new(&mut opacity_pct, 0.0_f32..=100.0_f32)
+                        .text("Opacity")
+                        .suffix("%")
+                        .fixed_decimals(0),
+                )
+                .on_hover_text("Transparency of all overlay panels (100% = fully opaque)")
+                .changed()
+            {
+                appearance.overlay_alpha = (opacity_pct * 2.55).round() as u8;
+                apply_theme(ctx, appearance.ui_theme, appearance.overlay_alpha, os_dark);
+                resp.appearance_changed = true;
+            }
+
+            ui.separator();
+
+            // ── Background colour ─────────────────────────────────────────────
+            ui.label("Background:");
+            ui.horizontal(|ui| {
+                let current_preset = BG_PRESETS
+                    .iter()
+                    .find(|(_, c)| c == &appearance.bg_color)
+                    .map(|(n, _)| *n)
+                    .unwrap_or("Custom");
+                egui::ComboBox::from_id_salt("bg_preset")
+                    .selected_text(current_preset)
+                    .show_ui(ui, |ui| {
+                        for &(name, color) in BG_PRESETS {
+                            if ui
+                                .selectable_label(appearance.bg_color == color, name)
+                                .clicked()
+                            {
+                                appearance.bg_color = color;
+                                resp.appearance_changed = true;
+                            }
+                        }
+                    });
+                let mut c32 = egui::Color32::from_rgb(
+                    appearance.bg_color[0],
+                    appearance.bg_color[1],
+                    appearance.bg_color[2],
+                );
+                if egui::color_picker::color_edit_button_srgba(
+                    ui,
+                    &mut c32,
+                    egui::color_picker::Alpha::Opaque,
+                )
+                .changed()
+                {
+                    appearance.bg_color = [c32.r(), c32.g(), c32.b()];
+                    resp.appearance_changed = true;
+                }
+            });
+
+            ui.separator();
+
+            // ── Palette ───────────────────────────────────────────────────────
+            ui.label("Palette:");
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_label("Theme")
+                    .selected_text(
+                        PALETTE_THEMES
+                            .iter()
+                            .find(|(_, p)| p == &sim.palette)
+                            .map(|(n, _)| *n)
+                            .unwrap_or("Custom"),
+                    )
+                    .show_ui(ui, |ui| {
+                        for &(name, theme) in PALETTE_THEMES {
+                            if ui.selectable_label(sim.palette == theme, name).clicked() {
+                                sim.palette = theme;
+                                resp.palette_changed = true;
+                            }
+                        }
+                    });
+                if ui
+                    .button("Randomize")
+                    .on_hover_text("Generate a new random palette for all active species")
+                    .clicked()
+                {
+                    resp.palette_changed = true;
+                    resp.randomize_palette = true;
+                }
+            });
+
+            let n = sim.species_count;
+            ui.horizontal_wrapped(|ui| {
+                for i in 0..n {
+                    let mut color = species_color(i, &sim.palette);
+                    let label = format!("S{}", i + 1);
+                    ui.vertical(|ui| {
+                        ui.label(&label);
+                        if egui::color_picker::color_edit_button_srgba(
+                            ui,
+                            &mut color,
+                            egui::color_picker::Alpha::Opaque,
+                        )
+                        .changed()
+                        {
+                            let r = color.r() as u32;
+                            let g = color.g() as u32;
+                            let b = color.b() as u32;
+                            sim.palette[i] = 0xFF00_0000 | (b << 16) | (g << 8) | r;
+                            resp.palette_changed = true;
+                        }
+                    });
+                }
+            });
+        });
+
+    resp
+}
+
+/// Draw the pop-out Attraction Matrix window.
+///
+/// Only called when `open` is true (matrix is popped out of the main panel).
+/// Returns true if "Randomize Matrix" was clicked.
+pub fn draw_matrix_window(ctx: &egui::Context, sim: &mut SimulationState, open: &mut bool) -> bool {
+    let mut randomize = false;
+    let screen_w = ctx.screen_rect().width();
+
+    egui::Window::new("Attraction Matrix")
+        .open(open)
+        .default_pos(egui::pos2(screen_w * 0.55, 50.0))
+        .resizable(true)
+        .show(ctx, |ui| {
+            if ui
+                .button("Randomize Matrix")
+                .on_hover_text(
+                    "Fill the attraction matrix with random values; particles are not moved",
+                )
+                .clicked()
+            {
+                randomize = true;
+            }
+
+            let n = sim.species_count;
+            let col_width = if n <= 8 { 36.0 } else { 22.0 };
+
+            egui::ScrollArea::horizontal()
+                .id_salt("matrix_window_scroll")
+                .show(ui, |ui| {
+                    egui::Grid::new("matrix_window_grid")
+                        .min_col_width(col_width)
+                        .show(ui, |ui| {
+                            ui.label("");
+                            for j in 0..n {
+                                ui.colored_label(
+                                    species_color(j, &sim.palette),
+                                    format!("S{}", j + 1),
+                                );
+                            }
+                            ui.end_row();
+
+                            for i in 0..n {
+                                ui.colored_label(
+                                    species_color(i, &sim.palette),
+                                    format!("S{}", i + 1),
+                                );
+                                for j in 0..n {
+                                    let v = sim.attraction[i * MAX_SPECIES + j];
+                                    let bg = attraction_cell_color(v);
+                                    egui::Frame::new()
+                                        .fill(bg)
+                                        .inner_margin(egui::Margin::same(2))
+                                        .show(ui, |ui| {
+                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
+                                                egui::Color32::TRANSPARENT;
+                                            let r = ui.add(
+                                                egui::DragValue::new(
+                                                    &mut sim.attraction[i * MAX_SPECIES + j],
+                                                )
+                                                .range(-1.0_f32..=1.0_f32)
+                                                .speed(0.01)
+                                                .custom_formatter(|n, _| {
+                                                    if n >= 0.0 {
+                                                        format!(" {n:.4}")
+                                                    } else {
+                                                        format!("{n:.4}")
+                                                    }
+                                                })
+                                                .custom_parser(|s| s.trim().parse().ok()),
+                                            );
+                                            if r.changed() {
+                                                sim.mark_attraction_dirty();
+                                            }
+                                        });
+                                }
+                                ui.end_row();
+                            }
+
+                            if sim.border_mode == 3 {
+                                ui.colored_label(egui::Color32::GRAY, "Wall");
+                                for j in 0..n {
+                                    let bg = attraction_cell_color(
+                                        sim.attraction[MAX_SPECIES * MAX_SPECIES + j],
+                                    );
+                                    egui::Frame::new()
+                                        .fill(bg)
+                                        .inner_margin(egui::Margin::same(2))
+                                        .show(ui, |ui| {
+                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
+                                                egui::Color32::TRANSPARENT;
+                                            let r = ui.add(
+                                                egui::DragValue::new(
+                                                    &mut sim.attraction
+                                                        [MAX_SPECIES * MAX_SPECIES + j],
+                                                )
+                                                .range(-1.0_f32..=1.0_f32)
+                                                .speed(0.01)
+                                                .custom_formatter(|n, _| {
+                                                    if n >= 0.0 {
+                                                        format!(" {n:.4}")
+                                                    } else {
+                                                        format!("{n:.4}")
+                                                    }
+                                                })
+                                                .custom_parser(|s| s.trim().parse().ok()),
+                                            );
+                                            if r.changed() {
                                                 sim.mark_attraction_dirty();
                                             }
                                         });
@@ -1122,7 +1436,7 @@ pub fn draw_ui(
                 });
         });
 
-    resp
+    randomize
 }
 
 /// Convert a simulation world coordinate to an egui screen position.
@@ -1261,7 +1575,7 @@ pub fn draw_perf_overlay(
     let density = sim.particle_count as f32 / n_cells as f32;
 
     egui::Window::new("Performance")
-        .anchor(egui::Align2::LEFT_BOTTOM, [10.0, -10.0])
+        .anchor(egui::Align2::RIGHT_TOP, [-10.0, 10.0])
         .resizable(false)
         .collapsible(true)
         .default_open(false)
@@ -1654,4 +1968,50 @@ fn fmt_particles(n: usize) -> String {
     } else {
         n.to_string()
     }
+}
+
+// ── About window ──────────────────────────────────────────────────────────────
+
+/// Draw the About window showing version info, repo link, and a button to open
+/// the third-party licenses file.
+pub fn draw_about_window(ctx: &egui::Context, open: &mut bool) {
+    if !*open {
+        return;
+    }
+
+    egui::Window::new("About Particle Life")
+        .open(open)
+        .default_size([360.0, 220.0])
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading(egui::RichText::new("Particle Life").size(22.0));
+                ui.label(egui::RichText::new("Version 0.5.0").weak());
+            });
+
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                ui.label("Author: Brandon Bisel");
+                ui.separator();
+                ui.label("License: MIT");
+            });
+            ui.add_space(4.0);
+            ui.hyperlink_to(
+                "View on GitHub",
+                "https://github.com/brandonbisel/particle-life",
+            );
+
+            ui.add_space(8.0);
+
+            if ui.button("Open Third-Party Licenses").clicked() {
+                // Embedded at compile time so the correct licenses always ship with the binary.
+                const LICENSES_HTML: &str = include_str!("../THIRD_PARTY_LICENSES.html");
+                let path = std::env::temp_dir().join("particle_life_licenses.html");
+                if std::fs::write(&path, LICENSES_HTML).is_ok() {
+                    let _ = open::that(&path);
+                }
+            }
+        });
 }

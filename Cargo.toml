@@ -1,7 +1,11 @@
 [package]
 name = "ParticleLife"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
+authors = ["Brandon Bisel <brandonbisel@gmail.com>"]
+license = "MIT"
+description = "GPU-accelerated particle life simulator with emergent flocking and clustering behaviour"
+repository = "https://github.com/brandonbisel/particle-life"
 
 [dependencies]
 winit      = "0.30"
@@ -19,6 +23,8 @@ rfd        = "0.15"
 egui-phosphor = "0.9.0"
 png = "0.17"
 base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+open = "5"
 
 [profile.release]
 lto = "thin"

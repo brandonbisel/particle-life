@@ -9,7 +9,7 @@
 //! 6. **Force**    — 21-cell neighborhood; LDS tile for homogeneous workgroups; `inverseSqrt`-based force.
 
 /// Maximum number of species supported by the attraction matrix and PALETTE.
-pub const MAX_SPECIES: usize = 8;
+pub const MAX_SPECIES: usize = 16;
 /// Hard cap on the GPU particle buffer. Raising it increases VRAM by ~24 bytes/particle.
 pub const MAX_PARTICLES: usize = 2_000_000;
 // cell = r_max_norm/2, so grid_w = floor(2/r_max_norm).
@@ -33,15 +33,23 @@ pub const BASE_WORLD_HEIGHT: f32 = 720.0;
 /// so the vertex shader can do a single sRGB→linear conversion and the GPU's
 /// automatic linear→sRGB encoding on the sRGB framebuffer produces the
 /// correct final colour.
-pub const PALETTE_DEFAULT: [u32; 8] = [
-    0xFF8585EF, // salmon-red   sRGB(239, 133, 133)
-    0xFF85EF85, // light-green  sRGB(133, 239, 133)
-    0xFFEF9885, // periwinkle   sRGB(133, 152, 239)
-    0xFF7AE5EF, // pale-yellow  sRGB(239, 229, 122)
-    0xFFEF7AD0, // lavender     sRGB(208, 122, 239)
-    0xFFEAEA7A, // pale-cyan    sRGB(122, 234, 234)
-    0xFF7ABDF4, // peach        sRGB(244, 189, 122)
-    0xFFDBA8F4, // rose-pink    sRGB(244, 168, 219)
+pub const PALETTE_DEFAULT: [u32; 16] = [
+    0xFF8585EF, // salmon-red    sRGB(239, 133, 133)
+    0xFF85EF85, // light-green   sRGB(133, 239, 133)
+    0xFFEF9885, // periwinkle    sRGB(133, 152, 239)
+    0xFF7AE5EF, // pale-yellow   sRGB(239, 229, 122)
+    0xFFEF7AD0, // lavender      sRGB(208, 122, 239)
+    0xFFEAEA7A, // pale-cyan     sRGB(122, 234, 234)
+    0xFF7ABDF4, // peach         sRGB(244, 189, 122)
+    0xFFDBA8F4, // rose-pink     sRGB(244, 168, 219)
+    0xFF85C4F4, // warm-gold     sRGB(244, 196, 133)
+    0xFFABEF85, // spring-green  sRGB(133, 239, 171)
+    0xFF85EFCF, // aquamarine    sRGB(207, 239, 133)
+    0xFFEFD485, // wheat         sRGB(133, 212, 239)
+    0xFFD485EF, // orchid        sRGB(239, 133, 212)
+    0xFF85B8EF, // sky-blue      sRGB(239, 184, 133)
+    0xFFEF8585, // coral         sRGB(133, 133, 239)
+    0xFFB8F485, // yellow-green  sRGB(133, 244, 184)
 ];
 
 #[repr(C)]
@@ -72,22 +80,38 @@ struct SimParams {
 pub struct SimulationState {
     /// Target particle count used on the next [`respawn`](SimulationState::respawn).
     pub particle_count: usize,
+    /// Number of active species; also the dimension of the N×N attraction matrix.
     pub species_count: usize,
+    /// Hard-core repulsion radius as a fraction of [`BASE_WORLD_HEIGHT`].
     pub r_min: f32,
+    /// Outer interaction cutoff radius as a fraction of [`BASE_WORLD_HEIGHT`].
     pub r_max: f32,
+    /// Velocity damping coefficient applied each frame; 0 = no damping, 1 = full stop.
     pub friction: f32,
+    /// Global scale factor applied to all inter-particle forces.
     pub force_scale: f32,
-    pub particle_radius: f32,  // world units
-    pub attraction: [f32; 64], // row-major 8×8; A[i,j] = attraction[i*8+j]
+    /// Particle render radius in world units.
+    pub particle_radius: f32,
+    /// Row-major attraction coefficients.
+    ///
+    /// `[0..256]`: the N×N particle–particle matrix; `attraction[i * MAX_SPECIES + j]` is the
+    /// force species `j` exerts on species `i` (row = recipient, col = attractor).
+    /// `[256..272]`: the wall-attraction row for border mode 3 (Matrix); `A[256 + j]` is the
+    /// wall's pull on species `j`.
+    pub attraction: [f32; 272],
     /// Per-species colours as packed sRGB `0xFF_BB_GG_RR` u32s.
-    pub palette: [u32; 8],
+    pub palette: [u32; 16],
+    /// When true the simulation clock is frozen; no compute dispatches are issued.
     pub paused: bool,
-    pub border_mode: u32, // 0 = Wrap, 1 = Repel, 2 = Static
+    /// Active border behaviour: 0 = Wrap (torus), 1 = Repel (spring wall), 2 = Static (hard wall), 3 = Matrix.
+    pub border_mode: u32,
+    /// Multiplier applied to the spring-wall force in Repel mode.
     pub border_repel_strength: f32,
     /// World dimensions in simulation units.  At the default 1280×720 these equal pixel
     /// counts; at other sizes only the aspect ratio and ratio to [`BASE_WORLD_HEIGHT`]
     /// affect physics (the normalised interaction radius shrinks as the world grows).
     pub world_width: f32,
+    /// See [`world_width`](Self::world_width).
     pub world_height: f32,
     /// When true, [`auto_world_size`](Self::auto_world_size) scales the world to keep
     /// particle density constant at [`density_target`](Self::density_target).
@@ -102,11 +126,14 @@ pub struct SimulationState {
     pub perf_target_fps: f32,
     // Accumulates dt between world-size adjustments in perf_auto mode.
     perf_adj_timer: f32,
-    // Mouse attractor/repulsor — set by app.rs each frame before dispatch.
+    /// Mouse cursor world-space X position for the attractor/repulsor; set by `app.rs` each frame.
     pub mouse_x: f32,
+    /// Mouse cursor world-space Y position for the attractor/repulsor; set by `app.rs` each frame.
     pub mouse_y: f32,
-    pub mouse_strength: f32, // positive = attract, negative = repel, 0 = inactive
-    pub mouse_range: f32,    // world-space radius of influence
+    /// Attractor/repulsor force strength; positive = attract, negative = repel, 0 = inactive.
+    pub mouse_strength: f32,
+    /// World-space radius of the mouse influence zone.
+    pub mouse_range: f32,
     /// When true, `respawn` draws species population fractions from a Dirichlet distribution
     /// instead of distributing particles equally across all species.
     pub random_species_dist: bool,
@@ -152,10 +179,14 @@ pub struct SimulationState {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Particle {
-    pub position: [f32; 2], // offset  0
-    pub velocity: [f32; 2], // offset  8
-    pub color: u32,         // offset 16
-    pub species: u32,       // offset 20
+    /// World-space XY position (bytes 0–7).
+    pub position: [f32; 2],
+    /// World-space XY velocity (bytes 8–15).
+    pub velocity: [f32; 2],
+    /// Packed sRGB colour `0xFF_BB_GG_RR` (bytes 16–19).
+    pub color: u32,
+    /// Species index, 0-based (bytes 20–23).
+    pub species: u32,
 }
 
 impl SimulationState {
@@ -237,9 +268,12 @@ impl SimulationState {
         self.world_height >= effective_max_h * 0.99
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        tile_size: u32,
+        pipeline_cache: Option<&wgpu::PipelineCache>,
         particle_count: usize,
         species_count: usize,
         world_width: f32,
@@ -264,7 +298,7 @@ impl SimulationState {
 
         let attraction_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Attraction Matrix"),
-            size: (MAX_SPECIES * MAX_SPECIES * std::mem::size_of::<f32>()) as u64,
+            size: ((MAX_SPECIES + 1) * MAX_SPECIES * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -359,41 +393,62 @@ impl SimulationState {
         });
 
         // ── Pipelines ────────────────────────────────────────────────────────
+        let no_constants = std::collections::HashMap::new();
+        // TILE override: AMD uses 64 (one full wavefront); all others use 32.
+        let force_constants: std::collections::HashMap<String, f64> = [
+            ("TILE".to_string(), tile_size as f64),
+            ("MAX_SPECIES".to_string(), MAX_SPECIES as f64),
+        ]
+        .into_iter()
+        .collect();
+
         let count_pipeline = make_compute_pipeline(
             device,
             "Count Pipeline",
             include_str!("shaders/grid_count.wgsl"),
             &count_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let prefix_a_pipeline = make_compute_pipeline(
             device,
             "Prefix A Pipeline",
             include_str!("shaders/grid_prefix_a.wgsl"),
             &prefix_a_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let prefix_b_pipeline = make_compute_pipeline(
             device,
             "Prefix B Pipeline",
             include_str!("shaders/grid_prefix_b.wgsl"),
             &prefix_b_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let prefix_c_pipeline = make_compute_pipeline(
             device,
             "Prefix C Pipeline",
             include_str!("shaders/grid_prefix_c.wgsl"),
             &prefix_c_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let scatter_pipeline = make_compute_pipeline(
             device,
             "Scatter Pipeline",
             include_str!("shaders/grid_scatter.wgsl"),
             &scatter_bgl,
+            &no_constants,
+            pipeline_cache,
         );
         let force_pipeline = make_compute_pipeline(
             device,
             "Force Pipeline",
             include_str!("shaders/compute.wgsl"),
             &force_bgl,
+            &force_constants,
+            pipeline_cache,
         );
 
         // ── Bind groups ──────────────────────────────────────────────────────
@@ -529,7 +584,7 @@ impl SimulationState {
 
         // ── Initial state ────────────────────────────────────────────────────
         let mut rng = Rng::new();
-        let mut attraction = [0.0f32; 64];
+        let mut attraction = [0.0f32; 272];
         seed_attraction_biased(&mut rng, &mut attraction, species_count);
 
         let mut sim = Self {
@@ -675,7 +730,7 @@ impl SimulationState {
         self.gpu_particle_count += n;
     }
 
-    /// Submit the five-pass spatial-grid compute pipeline for this frame.
+    /// Submit the six-pass spatial-grid compute pipeline for this frame.
     ///
     /// No-ops when paused or when no particles are present.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, queue: &wgpu::Queue, dt: f32) {
@@ -812,8 +867,8 @@ impl SimulationState {
             self.perf_target_fps = fps;
         }
 
-        // Copy compact n×n matrix into the full 8×8 layout.
-        self.attraction = [0.0f32; 64];
+        // Copy compact n×n matrix into the full 16×16 layout; wall row at [256..272].
+        self.attraction = [0.0f32; 272];
         let n = self.species_count;
         let pn = preset.species_count.min(MAX_SPECIES);
         for i in 0..n.min(pn) {
@@ -821,6 +876,15 @@ impl SimulationState {
                 if let Some(&v) = preset.attraction.get(i * pn + j) {
                     self.attraction[i * MAX_SPECIES + j] = v;
                 }
+            }
+        }
+        if let Some(ref wa) = preset.wall_attraction {
+            for (s, &v) in wa.iter().enumerate().take(MAX_SPECIES) {
+                self.attraction[MAX_SPECIES * MAX_SPECIES + s] = v;
+            }
+        } else if self.border_mode == 3 {
+            for j in 0..self.species_count {
+                self.attraction[MAX_SPECIES * MAX_SPECIES + j] = self.rng.range(-1.0, 1.0);
             }
         }
         self.attraction_dirty.set(true);
@@ -870,6 +934,16 @@ impl SimulationState {
                 None
             },
             attraction,
+            wall_attraction: {
+                let wa: Vec<f32> = self.attraction
+                    [MAX_SPECIES * MAX_SPECIES..MAX_SPECIES * MAX_SPECIES + MAX_SPECIES]
+                    .to_vec();
+                if wa.iter().all(|&v| v == 0.0) {
+                    None
+                } else {
+                    Some(wa)
+                }
+            },
             palette: Some(self.palette.to_vec()),
         }
     }
@@ -884,8 +958,20 @@ impl SimulationState {
     }
 
     /// Fill the active sub-matrix: positive self-attraction on diagonal, random off-diagonal.
+    /// In Matrix border mode the wall row is also randomized.
     pub fn randomize_attraction(&mut self) {
         seed_attraction_biased(&mut self.rng, &mut self.attraction, self.species_count);
+        if self.border_mode == 3 {
+            self.randomize_wall_row();
+        }
+        self.attraction_dirty.set(true);
+    }
+
+    /// Fill the wall row with random values in [-1, 1].
+    pub fn randomize_wall_row(&mut self) {
+        for j in 0..self.species_count {
+            self.attraction[MAX_SPECIES * MAX_SPECIES + j] = self.rng.range(-1.0, 1.0);
+        }
         self.attraction_dirty.set(true);
     }
 
@@ -956,7 +1042,8 @@ fn hsv_to_packed_srgb(h: f32, s: f32, v: f32) -> u32 {
     0xFF00_0000 | (to_u8(b) << 16) | (to_u8(g) << 8) | to_u8(r)
 }
 
-fn seed_attraction_biased(rng: &mut Rng, attraction: &mut [f32; 64], species_count: usize) {
+/// Fill the active N×N sub-matrix with uniform random values in `[-1, 1]`.
+fn seed_attraction_biased(rng: &mut Rng, attraction: &mut [f32; 272], species_count: usize) {
     for i in 0..species_count {
         for j in 0..species_count {
             attraction[i * MAX_SPECIES + j] = rng.range(-1.0, 1.0);
@@ -995,6 +1082,8 @@ fn make_compute_pipeline(
     label: &str,
     wgsl: &str,
     bgl: &wgpu::BindGroupLayout,
+    constants: &std::collections::HashMap<String, f64>,
+    cache: Option<&wgpu::PipelineCache>,
 ) -> wgpu::ComputePipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
@@ -1010,13 +1099,17 @@ fn make_compute_pipeline(
         layout: Some(&layout),
         module: &shader,
         entry_point: Some("cs_main"),
-        compilation_options: wgpu::PipelineCompilationOptions::default(),
-        cache: None,
+        compilation_options: wgpu::PipelineCompilationOptions {
+            constants,
+            ..Default::default()
+        },
+        cache,
     })
 }
 
 // ── RNG ──────────────────────────────────────────────────────────────────────
 
+/// Xorshift32 PRNG. Fast, non-cryptographic; sufficient for particle spawn and attraction init.
 struct Rng(u32);
 
 impl Rng {
@@ -1063,5 +1156,88 @@ mod tests {
         assert_eq!(mem::offset_of!(Particle, velocity), 8);
         assert_eq!(mem::offset_of!(Particle, color), 16);
         assert_eq!(mem::offset_of!(Particle, species), 20);
+    }
+
+    // The attraction buffer layout is load-bearing: [0..256] is the 16×16 matrix,
+    // [256..272] is the wall row.  If MAX_SPECIES changes these must stay consistent.
+    #[test]
+    fn attraction_array_layout() {
+        assert_eq!(
+            MAX_SPECIES * MAX_SPECIES,
+            256,
+            "particle matrix occupies [0..256]"
+        );
+        assert_eq!(
+            MAX_SPECIES * MAX_SPECIES + MAX_SPECIES,
+            272,
+            "wall row ends at 272"
+        );
+    }
+
+    #[test]
+    fn rng_is_deterministic() {
+        let mut a = Rng::new();
+        let mut b = Rng::new();
+        for _ in 0..100 {
+            assert_eq!(a.next_u32(), b.next_u32());
+        }
+    }
+
+    #[test]
+    fn rng_next_f32_is_in_unit_interval() {
+        let mut rng = Rng::new();
+        for _ in 0..1000 {
+            let v = rng.next_f32();
+            assert!(v >= 0.0 && v <= 1.0, "next_f32 out of [0,1]: {v}");
+        }
+    }
+
+    #[test]
+    fn rng_range_stays_in_bounds() {
+        let mut rng = Rng::new();
+        for _ in 0..1000 {
+            let v = rng.range(-1.0, 1.0);
+            assert!(v >= -1.0 && v <= 1.0, "range out of [-1,1]: {v}");
+        }
+    }
+
+    #[test]
+    fn hsv_to_packed_srgb_red() {
+        // Pure red: h=0, s=1, v=1 → RGB(255, 0, 0), packed 0xFF0000FF
+        let packed = hsv_to_packed_srgb(0.0, 1.0, 1.0);
+        assert_eq!(packed & 0xFF, 255, "R channel"); // R in bits 0-7
+        assert_eq!((packed >> 8) & 0xFF, 0, "G channel");
+        assert_eq!((packed >> 16) & 0xFF, 0, "B channel");
+        assert_eq!((packed >> 24) & 0xFF, 0xFF, "A channel");
+    }
+
+    #[test]
+    fn hsv_to_packed_srgb_green() {
+        // Pure green: h=120, s=1, v=1 → RGB(0, 255, 0), packed 0xFF00FF00
+        let packed = hsv_to_packed_srgb(120.0, 1.0, 1.0);
+        assert_eq!(packed & 0xFF, 0, "R channel");
+        assert_eq!((packed >> 8) & 0xFF, 255, "G channel");
+        assert_eq!((packed >> 16) & 0xFF, 0, "B channel");
+    }
+
+    #[test]
+    fn hsv_to_packed_srgb_blue() {
+        // Pure blue: h=240, s=1, v=1 → RGB(0, 0, 255), packed 0xFFFF0000
+        let packed = hsv_to_packed_srgb(240.0, 1.0, 1.0);
+        assert_eq!(packed & 0xFF, 0, "R channel");
+        assert_eq!((packed >> 8) & 0xFF, 0, "G channel");
+        assert_eq!((packed >> 16) & 0xFF, 255, "B channel");
+    }
+
+    #[test]
+    fn hsv_to_packed_srgb_alpha_always_ff() {
+        let mut rng = Rng::new();
+        for _ in 0..50 {
+            let h = rng.next_f32() * 360.0;
+            let s = rng.next_f32();
+            let v = rng.next_f32();
+            let packed = hsv_to_packed_srgb(h, s, v);
+            assert_eq!((packed >> 24) & 0xFF, 0xFF, "alpha must always be 0xFF");
+        }
     }
 }

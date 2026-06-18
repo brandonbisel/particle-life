@@ -5,11 +5,12 @@
 // integrates velocity and position.  Reading from sorted_entries instead of through
 // sorted_indices avoids random pointer-chasing and keeps GPU caches warm at high N.
 //
-// Shared-memory tile path: when all 64 threads in a workgroup process particles from the
+// Shared-memory tile path: when all TILE threads in a workgroup process particles from the
 // same grid cell (common in Ecosystem/Symbiosis clustering), their 21-cell neighborhood is
-// identical.  The workgroup cooperatively loads each neighbor cell into a 64-entry LDS tile
-// in rounds, so each global read is shared across all 64 threads instead of repeated 64x.
+// identical.  The workgroup cooperatively loads each neighbor cell into an LDS tile in rounds
+// of TILE entries, so each global read is amortised across all threads.
 // The scalar path handles boundary workgroups and uniformly-distributed particle layouts.
+// TILE is an override constant (default 64); set to 32 for NVIDIA/Metal/Intel at startup.
 
 struct Particle {
     position: vec2<f32>,
@@ -45,14 +46,15 @@ struct SortedEntry {
 
 @group(0) @binding(0) var<storage, read_write> particles:      array<Particle>;
 @group(0) @binding(1) var<uniform>             params:         SimParams;
-@group(0) @binding(2) var<storage, read>       attraction:     array<f32, 64>;
+@group(0) @binding(2) var<storage, read>       attraction:     array<f32>;
 @group(0) @binding(3) var<storage, read>       cell_offsets:   array<u32>;
 @group(0) @binding(4) var<storage, read>       sorted_entries: array<SortedEntry>;
 
-const TILE: u32 = 64u;
+override TILE: u32 = 64u;
+override MAX_SPECIES: u32 = 16u;
 
-// 64 x 16 B = 1 KB of LDS; plus 12 B for the reference cell and divergence flag.
-var<workgroup> tile:        array<SortedEntry, 64>;
+// TILE × 16 B of LDS; plus 12 B for the reference cell and divergence flag.
+var<workgroup> tile:        array<SortedEntry, TILE>;
 var<workgroup> ws_ref_gx:   u32;
 var<workgroup> ws_ref_gy:   u32;
 var<workgroup> ws_diverged: atomic<u32>;
@@ -63,7 +65,7 @@ fn torus_delta(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return d;
 }
 
-@compute @workgroup_size(64, 1, 1)
+@compute @workgroup_size(TILE, 1, 1)
 fn cs_main(
     @builtin(global_invocation_id) gid:     vec3<u32>,
     @builtin(local_invocation_id)  lid_vec: vec3<u32>,
@@ -97,7 +99,7 @@ fn cs_main(
     let gx_i   = i32(min(u32(subj.position.x * f32(grid_w)), grid_w - 1u));
     let gy_i   = i32(min(u32(subj.position.y * f32(grid_w)), grid_w - 1u));
 
-    // Homogeneity check — all 64 threads participate to keep barriers uniform.
+    // Homogeneity check — all TILE threads participate to keep barriers uniform.
     // sorted_entries is cell-sorted, so a workgroup processing particles from a single
     // hot cell (as in Ecosystem clusters) will pass this check.  Boundary workgroups
     // spanning two cells fall back to the scalar path.
@@ -114,7 +116,7 @@ fn cs_main(
     let homogeneous = atomicLoad(&ws_diverged) == 0u;
 
     if homogeneous {
-        // TILE PATH — all 64 threads share the same 21-cell neighborhood.
+        // TILE PATH — all TILE threads share the same 21-cell neighborhood.
         // Cooperatively load each neighbor cell into LDS in rounds of TILE entries,
         // then all threads compute forces against the tile.
         // start/end/j are uniform across threads, so while/workgroupBarrier are uniform.
@@ -153,7 +155,7 @@ fn cs_main(
 
                             if dist_sq > 1e-8 && dist_sq < r_max_sq {
                                 let inv_dist = inverseSqrt(dist_sq);
-                                let a        = attraction[subj.species * 8u + entry.species];
+                                let a        = attraction[subj.species * MAX_SPECIES + entry.species];
 
                                 // rep:  delta × (inv_r_min − inv_dist)
                                 // int:  delta × a × (inv_dist − |2 − r_sum·inv_dist| × inv_r_range)
@@ -197,7 +199,7 @@ fn cs_main(
 
                         if dist_sq > 1e-8 && dist_sq < r_max_sq {
                             let inv_dist = inverseSqrt(dist_sq);
-                            let a        = attraction[subj.species * 8u + entry.species];
+                            let a        = attraction[subj.species * MAX_SPECIES + entry.species];
 
                             let rep_f    = inv_r_min - inv_dist;
                             let int_f    = a * (inv_dist - abs(2.0 - r_sum * inv_dist) * inv_r_range);
@@ -259,6 +261,31 @@ fn cs_main(
         }
     }
 
+    // Border matrix force (mode 3): per-species wall attraction, same spring profile as mode 1.
+    // wall_a > 0 → repulsion; wall_a < 0 → attraction; wall_a = 0 → hard clamp only.
+    if params.border_mode == 3u {
+        let wall_a   = attraction[MAX_SPECIES * MAX_SPECIES + subj.species];
+        let s        = params.border_repel_strength * params.dt * wall_a;
+        let brange_y = r_max;
+        let brange_x = r_max / aspect;
+        if subj.position.x < brange_x {
+            let t = 1.0 - subj.position.x / brange_x;
+            vel.x += t * t * s;
+        }
+        if subj.position.x > 1.0 - brange_x {
+            let t = 1.0 - (1.0 - subj.position.x) / brange_x;
+            vel.x -= t * t * s;
+        }
+        if subj.position.y < brange_y {
+            let t = 1.0 - subj.position.y / brange_y;
+            vel.y += t * t * s;
+        }
+        if subj.position.y > 1.0 - brange_y {
+            let t = 1.0 - (1.0 - subj.position.y) / brange_y;
+            vel.y -= t * t * s;
+        }
+    }
+
     // CFL guard.
     let max_speed = params.r_max / params.dt * 0.25;
     let spd = length(vel);
@@ -269,8 +296,8 @@ fn cs_main(
     if params.border_mode == 0u {
         // Wrap: torus topology.
         pos = fract(pos + vec2<f32>(1.0, 1.0));
-    } else if params.border_mode == 1u {
-        // Repel: spring force already applied; just clamp against tunneling.
+    } else if params.border_mode == 1u || params.border_mode == 3u {
+        // Repel/Matrix: spring force already applied; just clamp against tunneling.
         pos = clamp(pos, vec2<f32>(0.0), vec2<f32>(1.0));
     } else {
         // Static: hard wall — clamp and zero the outward velocity component.

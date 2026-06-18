@@ -51,6 +51,7 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 - `wgpu = "24"` — egui-wgpu 0.31 pins to `^24`; wgpu 25 is a breaking change for the egui integration
 - `egui`, `egui-winit`, `egui-wgpu` must all be the same minor version (currently `0.31`)
 - `winit = "0.30"` — uses the `ApplicationHandler` trait API introduced in 0.30; prior versions use a different event loop pattern
+- `clap = "4"` — CLI argument parsing; licensed MIT OR Apache-2.0. Used with the `derive` feature for `CliArgs` in `cli.rs`.
 
 ## Architecture
 
@@ -58,7 +59,8 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 
 | Module | Role |
 |--------|------|
-| `main.rs` | Entry point; creates `EventLoop` with `ControlFlow::Poll` |
+| `main.rs` | Entry point; parses CLI args (`cli::CliArgs::parse()`), creates `EventLoop` with `ControlFlow::Poll` |
+| `cli.rs` | `CliArgs` struct (clap derive); all command-line flags and their `value_parser` helpers |
 | `app.rs` | `AppHandler` / `AppState`; event routing, camera, per-frame orchestration |
 | `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
 | `simulation.rs` | `SimulationState`; GPU buffers, 6-pass compute dispatch, preset apply, spawn |
@@ -76,7 +78,7 @@ RedrawRequested
   ├─ egui frame (draw_ui, draw_toolbar, draw_perf_overlay, draw_world_border, draw_cursor_indicator)
   ├─ apply tool effects → sim.mouse_strength / spawn_particles()
   └─ renderer.render()
-       ├─ sim.dispatch()   ← 5 GPU compute passes (physics)
+       ├─ sim.dispatch()   ← 6 GPU compute passes (physics)
        ├─ particle render pass
        └─ egui render pass
 ```
@@ -138,6 +140,7 @@ border_mode: u32, border_repel_strength: f32, _pad: [u32; 2]  (16B)
 | `0` | Wrap | Torus topology; `torus_delta` used for all distance calculations |
 | `1` | Repel | Spring force near walls; position clamped after integration |
 | `2` | Static | Hard wall; outward velocity zeroed and position clamped |
+| `3` | Matrix | Per-species wall attraction; `attraction[256..272]` is a wall-attraction row (one value per species); randomized alongside the main matrix |
 
 In the force shader, use `torus_delta` for neighbor distances only when `border_mode == 0`. In repel/static modes, direct deltas are correct — cross-boundary attraction should vanish naturally.
 
@@ -210,11 +213,11 @@ The share-code UI in the Presets panel exposes Copy (writes to egui clipboard vi
 
 ## Attraction Matrix
 
-- Stored as `[f32; 64]`, row-major, 8×8 (MAX_SPECIES = 8)
-- `A[i, j] = attraction[i * 8 + j]` — force that species `j` exerts on species `i`
+- Stored as `[f32; 272]`, layout: `[0..256]` is the 16×16 particle–particle matrix (MAX_SPECIES = 16), `[256..272]` is the wall-attraction row used by Matrix border mode
+- `A[i, j] = attraction[i * MAX_SPECIES + j]` — force that species `j` exerts on species `i`
 - Only the active `species_count × species_count` sub-matrix is meaningful; unused entries are zero
-- `randomize_attraction()` fills the active sub-matrix with uniform random `[-1, 1]`
-- Uploaded to `attraction_buf` (STORAGE, 256 bytes) each frame in `dispatch()`
+- `randomize_attraction()` fills the active sub-matrix with uniform random `[-1, 1]`; in Matrix border mode also randomizes `[256..272]`
+- Uploaded to `attraction_buf` (STORAGE, 1088 bytes) each frame in `dispatch()`
 - Shareable via `config::encode_matrix` / `config::decode_matrix` — see **Matrix Share Codes** under Preset System above
 
 ## Mouse / Tool State

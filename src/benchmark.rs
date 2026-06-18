@@ -17,8 +17,11 @@ use crate::simulation::MAX_PARTICLES;
 /// suite measures raw GPU throughput at increasing density (O(n²) scaling intentional).
 #[derive(Clone, Copy)]
 pub struct BenchmarkTier {
+    /// Particle count for this tier.
     pub particles: usize,
+    /// Fixed world width in simulation units (always 1280.0 in the current suite).
     pub world_width: f32,
+    /// Fixed world height in simulation units (always 720.0 in the current suite).
     pub world_height: f32,
 }
 
@@ -538,13 +541,21 @@ pub enum CapacityAction {
 
 /// Progress snapshot returned by [`CapacityBench::progress`].
 pub struct CapacityProgress {
+    /// Index into [`builtin_presets`] currently under test.
     pub preset_idx: usize,
+    /// Total number of presets in the search.
     pub total_presets: usize,
+    /// Current binary-search iteration (1-based for display).
     pub iter: u32,
+    /// Maximum iterations per preset.
     pub max_iters: u32,
+    /// Particle count currently being tested.
     pub particles: usize,
+    /// Seconds elapsed in the current warmup/collection phase.
     pub elapsed: f32,
+    /// Total seconds needed for the current phase.
     pub target_secs: f32,
+    /// `true` during warmup, `false` during FPS collection.
     pub is_warmup: bool,
 }
 
@@ -573,6 +584,7 @@ impl CapacityBench {
         }
     }
 
+    /// Returns `true` while any preset is in warmup or collection.
     pub fn is_running(&self) -> bool {
         matches!(
             self.state,
@@ -585,6 +597,7 @@ impl CapacityBench {
         self.state = CapState::Idle;
     }
 
+    /// Returns `true` after all presets have been searched.
     pub fn is_done(&self) -> bool {
         matches!(self.state, CapState::Done)
     }
@@ -935,5 +948,73 @@ impl CapacityBench {
     fn initial_mid() -> usize {
         Self::next_mid(CAPACITY_MIN_N, MAX_PARTICLES)
             .unwrap_or((CAPACITY_MIN_N + MAX_PARTICLES) / 2)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn num_combos_matches_product() {
+        assert_eq!(
+            BenchmarkRunner::num_combos(),
+            BUILTIN_COUNT * BENCHMARK_TIERS.len()
+        );
+        assert_eq!(BenchmarkRunner::num_combos(), 16);
+    }
+
+    #[test]
+    fn combo_index_math_is_consistent() {
+        let total = BenchmarkRunner::num_combos();
+        for combo in 0..total {
+            let pi = BenchmarkRunner::combo_preset_idx(combo);
+            let ti = BenchmarkRunner::combo_tier_idx(combo);
+            assert!(
+                pi < BUILTIN_COUNT,
+                "preset_idx {pi} out of range for combo {combo}"
+            );
+            assert!(
+                ti < BENCHMARK_TIERS.len(),
+                "tier_idx {ti} out of range for combo {combo}"
+            );
+            // Verify the flat index round-trips.
+            assert_eq!(pi * BENCHMARK_TIERS.len() + ti, combo);
+        }
+    }
+
+    #[test]
+    fn combo_preset_has_fixed_world_and_no_auto_density() {
+        for combo in 0..BenchmarkRunner::num_combos() {
+            let p = BenchmarkRunner::combo_preset(combo);
+            let tier = BENCHMARK_TIERS[BenchmarkRunner::combo_tier_idx(combo)];
+            assert!(
+                !p.auto_density,
+                "combo {combo}: auto_density must be false for reproducibility"
+            );
+            assert_eq!(
+                p.world_width, tier.world_width,
+                "combo {combo}: world_width mismatch"
+            );
+            assert_eq!(
+                p.world_height, tier.world_height,
+                "combo {combo}: world_height mismatch"
+            );
+            assert_eq!(
+                p.particle_count, tier.particles,
+                "combo {combo}: particle_count mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn capacity_preset_for_has_fixed_world_and_no_auto_density() {
+        for idx in 0..BUILTIN_COUNT {
+            let p = CapacityBench::preset_for(idx, 50_000);
+            assert!(!p.auto_density);
+            assert_eq!(p.world_width, 1280.0);
+            assert_eq!(p.world_height, 720.0);
+            assert_eq!(p.particle_count, 50_000);
+        }
     }
 }

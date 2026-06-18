@@ -10,8 +10,8 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 
 - **100K particles** at 165+ fps on a modern discrete GPU (display-limited; see [Benchmarks](BENCHMARKS.md))
 - **500K particles** at 25–59 fps at fixed world size depending on particle distribution (Clusters/Chains ~58 fps; Ecosystem ~25 fps with LDS tile and rsqrt force pass; see [Benchmarks](BENCHMARKS.md)); comparable frame rates at 2M with auto-density
-- **8 species** with a fully editable N×N attraction matrix
-- **3 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall)
+- **16 species** with a fully editable N×N attraction matrix
+- **4 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall), Matrix (per-species wall attraction)
 - **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
 - **Physical world size** — scales the simulation domain; auto-density mode keeps GPU load linear with particle count by growing the world as particles increase
 - **Configurable palette** — five built-in themes (Default, Vivid, Neon, Pastel, Dark), per-species color pickers, and randomize
@@ -44,7 +44,7 @@ Each pair of particles within range `r_max` interacts via a piecewise force:
 - **Repulsion zone** `[0, r_min]`: hard repulsion proportional to overlap — prevents collapse
 - **Interaction zone** `[r_min, r_max]`: species-dependent attraction or repulsion, peaking at `(r_min + r_max) / 2`
 
-The attraction coefficient `A[i,j]` ∈ [-1, 1] is stored in an 8×8 matrix. Randomizing the matrix produces qualitatively different emergent behaviors: orbiting clusters, chain structures, single-species stars, and more.
+The attraction coefficient `A[i,j]` ∈ [-1, 1] is stored in a 16×16 matrix. Randomizing the matrix produces qualitatively different emergent behaviors: orbiting clusters, chain structures, single-species stars, and more.
 
 ### GPU Pipeline (6 compute passes per frame)
 
@@ -91,9 +91,29 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 | `pollster`                           | 0.3     | Block on async wgpu initialization           |
 | `serde` + `toml`                     | 1 / 0.8 | Preset serialisation                         |
 | `base64`                             | 0.22    | Matrix share-code encoding                   |
+| `clap`                               | 4       | Command-line argument parsing (MIT / Apache-2.0) |
 | `rfd`                                | 0.15    | Native file dialogs for import/export        |
 | `png`                                | 0.17    | PNG encoding for screenshots and thumbnails  |
 | `log` + `env_logger`                 | 0.4 / 0.11 | Structured logging (adapter selection, warnings) |
+
+## Command-Line Options
+
+```
+Usage: ParticleLife [OPTIONS]
+
+Options:
+      --bench                      Run full benchmark suite and write CSV, then exit
+      --capacity-bench             Run capacity benchmark and write CSV, then exit
+      --bench-output <FILE>        CSV output path (default: bench_results.csv / capacity_results.csv)
+      --preset <NAME_OR_INDEX>     Apply preset on launch (name or 0-based index)
+      --fullscreen                 Open in borderless fullscreen on launch
+      --world-size <WxH>           Set world size, e.g. 1920x1080
+      --particles <N>              Set particle count (clamped to 100–2 000 000)
+      --matrix <CODE>              Apply attraction matrix share code on launch
+  -h, --help                       Print help
+```
+
+All flags are optional and compose freely. When `--preset` and individual overrides (`--world-size`, `--particles`, `--matrix`) are combined, the preset is applied first and the overrides take precedence. Benchmark flags (`--bench`, `--capacity-bench`) ignore most sim settings because the benchmark runner cycles through its own fixed preset+tier combinations.
 
 ## Controls
 
@@ -134,7 +154,8 @@ The Vulkan backend is required. Wayland and X11 are both supported via winit.
 
 ```
 src/
-  main.rs              — Entry point; EventLoop + ControlFlow::Poll
+  main.rs              — Entry point; parses CLI args, creates EventLoop + ControlFlow::Poll
+  cli.rs               — CLI argument definitions (clap derive)
   app.rs               — ApplicationHandler; owns window, renderer, sim, egui state, camera
   renderer.rs          — wgpu device/surface/pipeline; render() drives one frame
   simulation.rs        — SimulationState; GPU buffers, 6-pass dispatch, spawn, preset apply
@@ -162,7 +183,7 @@ src/
 | `particle_radius` | 1.5 | Rendered size in world units |
 | `world_width/height` | 1280 × 720 | Simulation world dimensions; affects interaction density |
 | Max particles | 2,000,000 | Hard GPU buffer limit (~90 MB VRAM) |
-| Max species | 8 | Attraction matrix dimension |
+| Max species | 16 | Attraction matrix dimension |
 
 ## AI Assistance
 

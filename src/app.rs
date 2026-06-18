@@ -18,7 +18,7 @@ use winit::{
 };
 
 use crate::{
-    benchmark, config, icon, renderer, renderer::WgpuState, simulation::SimulationState, ui,
+    benchmark, cli, config, icon, renderer, renderer::WgpuState, simulation::SimulationState, ui,
 };
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -81,9 +81,21 @@ fn apply_zoom(cam: &mut Camera, cursor_world: [f32; 2], factor: f32) {
 /// Holds [`AppState`] behind an `Option` because the state cannot be created
 /// until the first [`resumed`](ApplicationHandler::resumed) event (required by
 /// Wayland, which only provides a valid window handle after that point).
-#[derive(Default)]
 pub struct AppHandler {
     state: Option<AppState>,
+    cli: cli::CliArgs,
+}
+
+impl AppHandler {
+    pub fn new(cli: cli::CliArgs) -> Self {
+        Self { state: None, cli }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AutoBenchKind {
+    Full,
+    Capacity,
 }
 
 struct AppState {
@@ -124,10 +136,18 @@ struct AppState {
     vsync: bool,
     // True while auto-performance is forcing vsync off; restored to `vsync` on exit.
     vsync_override: bool,
+    // Set when launched with --bench or --capacity-bench; triggers auto-save + exit on Done.
+    auto_bench: Option<AutoBenchKind>,
+    bench_output: Option<std::path::PathBuf>,
 
     // Appearance
     appearance: config::AppearanceConfig,
     os_dark: bool,
+
+    // UI overlay state
+    matrix_popped_out: bool,
+    appearance_open: bool,
+    about_open: bool,
 
     // Pending one-shot actions triggered by keyboard shortcuts
     pending_screenshot: bool,
@@ -180,6 +200,9 @@ impl ApplicationHandler for AppHandler {
 
         // X11 / XWayland: sets _NET_WM_ICON on the window directly.
         window.set_window_icon(Some(icon::app_icon()));
+        if self.cli.fullscreen {
+            window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
 
         let renderer = WgpuState::new(Arc::clone(&window));
         let size = window.inner_size();
@@ -200,6 +223,8 @@ impl ApplicationHandler for AppHandler {
         let mut sim = SimulationState::new(
             renderer.device(),
             renderer.queue(),
+            renderer.tile_size(),
+            renderer.pipeline_cache(),
             1000,
             6,
             world_width,
@@ -208,8 +233,52 @@ impl ApplicationHandler for AppHandler {
         if let Some(ref p) = session {
             sim.apply_preset(renderer.queue(), p);
         }
+
+        // CLI overrides (applied after session restore; later flags override earlier ones)
+        if let Some(ref name) = self.cli.preset {
+            let idx = name
+                .parse::<usize>()
+                .ok()
+                .filter(|&i| i < preset_library.len())
+                .or_else(|| {
+                    preset_library
+                        .iter()
+                        .position(|p| p.name.eq_ignore_ascii_case(name))
+                });
+            if let Some(i) = idx {
+                sim.apply_preset(renderer.queue(), &preset_library[i]);
+            } else {
+                log::warn!("--preset {name:?}: no matching preset found");
+            }
+        }
+        if let Some((w, h)) = self.cli.world_size {
+            sim.world_width = w as f32;
+            sim.world_height = h as f32;
+            sim.respawn(renderer.queue());
+        }
+        if let Some(n) = self.cli.particles {
+            sim.particle_count = n.clamp(100, crate::simulation::MAX_PARTICLES);
+            sim.respawn(renderer.queue());
+        }
+        if let Some(ref code) = self.cli.matrix.clone() {
+            match config::decode_matrix(code) {
+                Ok((n, matrix)) => {
+                    sim.species_count = n;
+                    sim.attraction = [0.0f32; 272];
+                    for i in 0..n {
+                        for j in 0..n {
+                            sim.attraction[i * crate::simulation::MAX_SPECIES + j] =
+                                matrix[i * n + j];
+                        }
+                    }
+                    sim.mark_attraction_dirty();
+                    sim.respawn(renderer.queue());
+                }
+                Err(e) => log::warn!("--matrix: {e}"),
+            }
+        }
         renderer.update_palette(&sim.palette);
-        let fit_zoom = compute_fit_zoom(world_width, world_height, size.width, size.height);
+        let fit_zoom = compute_fit_zoom(sim.world_width, sim.world_height, size.width, size.height);
         let per_species_count = sim.species_counts();
 
         let egui_ctx = egui::Context::default();
@@ -231,7 +300,12 @@ impl ApplicationHandler for AppHandler {
             .theme()
             .map(|t| t == winit::window::Theme::Dark)
             .unwrap_or(true);
-        ui::apply_theme(&egui_ctx, appearance.ui_theme, os_dark);
+        ui::apply_theme(
+            &egui_ctx,
+            appearance.ui_theme,
+            appearance.overlay_alpha,
+            os_dark,
+        );
 
         self.state = Some(AppState {
             renderer,
@@ -252,8 +326,13 @@ impl ApplicationHandler for AppHandler {
             capacity_bench: benchmark::CapacityBench::new(),
             vsync: true,
             vsync_override: false,
+            auto_bench: None,
+            bench_output: None,
             appearance,
             os_dark,
+            matrix_popped_out: false,
+            appearance_open: false,
+            about_open: false,
             tool: ui::Tool::Pan,
             tool_range: 0.1,
             mouse_strength: 2.0,
@@ -269,6 +348,40 @@ impl ApplicationHandler for AppHandler {
             pan_start_center: [0.5, 0.5],
             window,
         });
+
+        // Auto-benchmark mode: start immediately and exit when done.
+        if self.cli.bench || self.cli.capacity_bench {
+            let state = self.state.as_mut().unwrap();
+            state.renderer.set_vsync(false);
+            let sz = state.window.inner_size();
+            if self.cli.bench {
+                let action = state.benchmark.start(sz.width, sz.height);
+                Self::handle_benchmark_action(
+                    &mut state.sim,
+                    &state.renderer,
+                    action,
+                    &state.benchmark,
+                );
+                state.auto_bench = Some(AutoBenchKind::Full);
+                state.bench_output = Some(
+                    self.cli
+                        .bench_output
+                        .clone()
+                        .unwrap_or_else(|| "bench_results.csv".into()),
+                );
+            } else {
+                let action = state.capacity_bench.start(sz.width, sz.height);
+                state.frame_times.clear();
+                Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
+                state.auto_bench = Some(AutoBenchKind::Capacity);
+                state.bench_output = Some(
+                    self.cli
+                        .bench_output
+                        .clone()
+                        .unwrap_or_else(|| "capacity_results.csv".into()),
+                );
+            }
+        }
     }
 
     fn window_event(
@@ -282,6 +395,7 @@ impl ApplicationHandler for AppHandler {
         match &event {
             WindowEvent::CloseRequested => {
                 if let Some(ref s) = self.state {
+                    s.renderer.save_pipeline_cache();
                     config::save_session(&s.sim.to_preset("session"));
                     config::save_appearance(&s.appearance);
                 }
@@ -299,6 +413,7 @@ impl ApplicationHandler for AppHandler {
                 ..
             } => {
                 if let Some(ref s) = self.state {
+                    s.renderer.save_pipeline_cache();
                     config::save_session(&s.sim.to_preset("session"));
                     config::save_appearance(&s.appearance);
                 }
@@ -330,6 +445,13 @@ impl ApplicationHandler for AppHandler {
             WindowEvent::CursorMoved { position, .. } => {
                 state.cursor_px = position;
 
+                // If egui grabbed the pointer this frame (e.g. resize drag started),
+                // cancel any world-panning that slipped through the press-time check.
+                if state.lmb_panning && state.egui_ctx.is_using_pointer() {
+                    state.lmb_panning = false;
+                    state.lmb_egui = true;
+                }
+
                 if state.lmb_panning || state.mmb_panning {
                     let vp = window.inner_size();
                     let shader_zoom = state.camera.zoom_factor * state.fit_zoom;
@@ -356,8 +478,11 @@ impl ApplicationHandler for AppHandler {
                 match (button, btn_state) {
                     (MouseButton::Left, ElementState::Pressed) => {
                         state.lmb_down = true;
-                        state.lmb_egui = resp.consumed;
-                        if !resp.consumed {
+                        let egui_wants_mouse = resp.consumed
+                            || state.egui_ctx.is_pointer_over_area()
+                            || state.egui_ctx.is_using_pointer();
+                        state.lmb_egui = egui_wants_mouse;
+                        if !egui_wants_mouse {
                             match state.tool {
                                 ui::Tool::Pan => {
                                     state.lmb_panning = true;
@@ -521,7 +646,12 @@ impl ApplicationHandler for AppHandler {
 
             WindowEvent::ThemeChanged(t) => {
                 state.os_dark = t == winit::window::Theme::Dark;
-                ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.os_dark);
+                ui::apply_theme(
+                    &state.egui_ctx,
+                    state.appearance.ui_theme,
+                    state.appearance.overlay_alpha,
+                    state.os_dark,
+                );
             }
 
             WindowEvent::RedrawRequested => {
@@ -602,8 +732,12 @@ impl ApplicationHandler for AppHandler {
                     let vsync_available = state.renderer.vsync_toggle_available();
                     let preset_thumbnails = &state.preset_thumbnails;
                     let gallery_open = &mut state.gallery_open;
+                    let appearance_open = &mut state.appearance_open;
+                    let about_open = &mut state.about_open;
+                    let matrix_popped_out = &mut state.matrix_popped_out;
                     let per_species_count = &state.per_species_count;
                     let appearance = &mut state.appearance;
+                    let os_dark = state.os_dark;
                     let mut ui_r = ui::UiResponse::default();
                     let mut bench_r = ui::BenchmarkPanelResponse {
                         start: false,
@@ -618,7 +752,21 @@ impl ApplicationHandler for AppHandler {
                     let mut reset_view = false;
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r = ui::draw_ui(ctx, sim, appearance, bench_running);
+                        ui_r = ui::draw_ui(ctx, sim, bench_running, matrix_popped_out);
+                        if *matrix_popped_out && ui::draw_matrix_window(ctx, sim, matrix_popped_out)
+                        {
+                            ui_r.randomize = true;
+                        }
+                        let appearance_resp = ui::draw_appearance_overlay(
+                            ctx,
+                            sim,
+                            appearance,
+                            os_dark,
+                            appearance_open,
+                        );
+                        ui_r.palette_changed |= appearance_resp.palette_changed;
+                        ui_r.randomize_palette |= appearance_resp.randomize_palette;
+                        ui_r.appearance_changed |= appearance_resp.appearance_changed;
                         bench_r = ui::draw_perf_overlay(
                             ctx,
                             frame_times,
@@ -631,13 +779,26 @@ impl ApplicationHandler for AppHandler {
                             vsync_available,
                             per_species_count,
                         );
-                        let (rv, ss, tg, toolbar_rect) =
-                            ui::draw_toolbar(ctx, tool, *gallery_open, bench_running);
+                        let (rv, ss, tg, ta, tab, toolbar_rect) = ui::draw_toolbar(
+                            ctx,
+                            tool,
+                            *gallery_open,
+                            *appearance_open,
+                            *about_open,
+                            bench_running,
+                        );
                         reset_view = rv;
                         take_screenshot = ss;
                         if tg {
                             *gallery_open = !*gallery_open;
                         }
+                        if ta {
+                            *appearance_open = !*appearance_open;
+                        }
+                        if tab {
+                            *about_open = !*about_open;
+                        }
+                        ui::draw_about_window(ctx, about_open);
                         if *gallery_open
                             && !bench_running
                             && ui::draw_gallery(
@@ -675,6 +836,9 @@ impl ApplicationHandler for AppHandler {
 
                 if ui_resp.toggle_gallery {
                     state.gallery_open = !state.gallery_open;
+                }
+                if ui_resp.matrix_pop_out_toggled {
+                    state.matrix_popped_out = !state.matrix_popped_out;
                 }
                 if ui_resp.respawn {
                     // In auto-density mode, resize the world before spawning so density stays
@@ -831,7 +995,7 @@ impl ApplicationHandler for AppHandler {
                     match config::decode_matrix(&code) {
                         Ok((n, matrix)) => {
                             state.sim.species_count = n;
-                            state.sim.attraction = [0.0f32; 64];
+                            state.sim.attraction = [0.0f32; 272];
                             for i in 0..n {
                                 for j in 0..n {
                                     state.sim.attraction[i * crate::simulation::MAX_SPECIES + j] =
@@ -849,7 +1013,12 @@ impl ApplicationHandler for AppHandler {
                 }
 
                 if ui_resp.appearance_changed {
-                    ui::apply_theme(&state.egui_ctx, state.appearance.ui_theme, state.os_dark);
+                    ui::apply_theme(
+                        &state.egui_ctx,
+                        state.appearance.ui_theme,
+                        state.appearance.overlay_alpha,
+                        state.os_dark,
+                    );
                     config::save_appearance(&state.appearance);
                 }
 
@@ -888,6 +1057,20 @@ impl ApplicationHandler for AppHandler {
                     let action = state.benchmark.advance(raw_dt);
                     if matches!(action, benchmark::BenchmarkAction::Done) {
                         state.renderer.set_vsync(state.vsync);
+                        if state.auto_bench == Some(AutoBenchKind::Full) {
+                            let path = state
+                                .bench_output
+                                .take()
+                                .unwrap_or_else(|| "bench_results.csv".into());
+                            match state.benchmark.write_csv(&path) {
+                                Ok(()) => {
+                                    println!("Benchmark results written to {}", path.display())
+                                }
+                                Err(e) => log::error!("Benchmark CSV write failed: {e}"),
+                            }
+                            event_loop.exit();
+                            return;
+                        }
                     }
                     Self::handle_benchmark_action(
                         &mut state.sim,
@@ -928,6 +1111,20 @@ impl ApplicationHandler for AppHandler {
                     let action = state.capacity_bench.advance(raw_dt);
                     if matches!(action, benchmark::CapacityAction::Done) {
                         state.renderer.set_vsync(state.vsync);
+                        if state.auto_bench == Some(AutoBenchKind::Capacity) {
+                            let path = state
+                                .bench_output
+                                .take()
+                                .unwrap_or_else(|| "capacity_results.csv".into());
+                            match state.capacity_bench.write_csv(&path) {
+                                Ok(()) => {
+                                    println!("Capacity results written to {}", path.display())
+                                }
+                                Err(e) => log::error!("Capacity benchmark CSV write failed: {e}"),
+                            }
+                            event_loop.exit();
+                            return;
+                        }
                     }
                     if matches!(action, benchmark::CapacityAction::LoadPreset { .. }) {
                         state.frame_times.clear();
