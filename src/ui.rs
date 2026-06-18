@@ -883,36 +883,62 @@ pub fn draw_ui(
             ui.add(
                 egui::Slider::new(&mut sim.r_min, 0.001_f32..=0.1_f32)
                     .text("r_min")
-                    .step_by(0.001),
+                    .custom_formatter(|v, _| format!("{:.1}%", v * 100.0))
+                    .custom_parser(|s| {
+                        s.trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)
+                    }),
             )
             .on_hover_text(
-                "Hard-core repulsion radius as a fraction of the reference world height (720 units). \
+                "Hard-core repulsion radius as a percentage of the reference world height (720 units). \
                  Particles closer than this always repel, regardless of species.",
             );
             ui.add(
                 egui::Slider::new(&mut sim.r_max, 0.01_f32..=0.3_f32)
                     .text("r_max")
-                    .step_by(0.005),
+                    .custom_formatter(|v, _| format!("{:.1}%", v * 100.0))
+                    .custom_parser(|s| {
+                        s.trim_end_matches('%').trim().parse::<f64>().ok().map(|v| v / 100.0)
+                    }),
             )
             .on_hover_text(
-                "Maximum interaction distance as a fraction of the reference world height (720 units). \
+                "Maximum interaction distance as a percentage of the reference world height (720 units). \
                  At larger world sizes the effective GPU radius shrinks proportionally, \
                  keeping neighbour count and performance constant.",
             );
             ui.add(
                 egui::Slider::new(&mut sim.friction, 0.0_f32..=5.0_f32)
-                    .text("Friction")
+                    .text("Damping")
                     .step_by(0.05),
             )
             .on_hover_text(
-                "Velocity decay rate — velocity half-life ≈ ln(2)/friction (≈1.4s at default 0.5)",
+                "Exponential velocity decay rate. At the default 0.50, velocity halves every ≈1.4 s.",
             );
-            ui.add(
-                egui::Slider::new(&mut sim.force_scale, 0.0001_f32..=0.05_f32)
-                    .text("Force")
-                    .step_by(0.0001),
-            )
-            .on_hover_text("Global multiplier for all attraction and repulsion forces");
+            if sim.friction > 0.0 {
+                ui.label(format!(
+                    "        ≈ t½: {:.2} s",
+                    std::f32::consts::LN_2 / sim.friction
+                ));
+            } else {
+                ui.label("        ≈ t½: ∞");
+            }
+            {
+                let mut force_display = sim.force_scale * 1000.0;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut force_display, 0.1_f32..=50.0_f32)
+                            .text("Force")
+                            .step_by(0.1)
+                            .suffix(" ×10⁻³"),
+                    )
+                    .on_hover_text(
+                        "Global multiplier for all attraction and repulsion forces. \
+                         Default is 7.0 (= 0.007 internal).",
+                    )
+                    .changed()
+                {
+                    sim.force_scale = force_display / 1000.0;
+                }
+            }
             if ui
                 .button("Reset Defaults")
                 .on_hover_text(
@@ -1101,83 +1127,7 @@ pub fn draw_ui(
                         ui.label("(Matrix is in a separate window)");
                     } else {
 
-                    let n = sim.species_count;
-                    let col_width = if n <= 8 { 36.0 } else { 22.0 };
-
-                    egui::ScrollArea::horizontal()
-                        .id_salt("attraction_scroll")
-                        .show(ui, |ui| {
-                    egui::Grid::new("attraction_grid")
-                        .min_col_width(col_width)
-                        .show(ui, |ui| {
-                            // Header row: blank corner + one label per column species
-                            ui.label("");
-                            for j in 0..n {
-                                ui.colored_label(species_color(j, &sim.palette), format!("S{}", j + 1));
-                            }
-                            ui.end_row();
-
-                            // Data rows: row species label + N drag values
-                            for i in 0..n {
-                                ui.colored_label(species_color(i, &sim.palette), format!("S{}", i + 1));
-                                for j in 0..n {
-                                    let v = sim.attraction[i * MAX_SPECIES + j];
-                                    let bg = attraction_cell_color(v);
-                                    egui::Frame::new()
-                                        .fill(bg)
-                                        .inner_margin(egui::Margin::same(2))
-                                        .show(ui, |ui| {
-                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
-                                                egui::Color32::TRANSPARENT;
-                                            let resp = ui.add(
-                                                egui::DragValue::new(
-                                                    &mut sim.attraction[i * MAX_SPECIES + j],
-                                                )
-                                                .range(-1.0_f32..=1.0_f32)
-                                                .speed(0.01)
-                                                .custom_formatter(|n, _| {
-                                                    if n >= 0.0 {
-                                                        format!(" {n:.4}")
-                                                    } else {
-                                                        format!("{n:.4}")
-                                                    }
-                                                })
-                                                .custom_parser(|s| s.trim().parse().ok()),
-                                            );
-                                            if resp.changed() {
-                                                sim.mark_attraction_dirty();
-                                            }
-                                        });
-                                }
-                                ui.end_row();
-                            }
-
-                            // Wall row: only visible in Matrix border mode.
-                            if sim.border_mode == 3 {
-                                ui.colored_label(egui::Color32::GRAY, "Wall");
-                                for j in 0..n {
-                                    let bg = attraction_cell_color(sim.attraction[MAX_SPECIES * MAX_SPECIES + j]);
-                                    egui::Frame::new()
-                                        .fill(bg)
-                                        .inner_margin(egui::Margin::same(2))
-                                        .show(ui, |ui| {
-                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
-                                                egui::Color32::TRANSPARENT;
-                                            let resp = ui.add(
-                                                egui::DragValue::new(&mut sim.attraction[MAX_SPECIES * MAX_SPECIES + j])
-                                                    .range(-1.0_f32..=1.0_f32)
-                                                    .speed(0.01)
-                                                    .fixed_decimals(4),
-                                            );
-                                            if resp.changed() {
-                                                sim.mark_attraction_dirty();
-                                            }
-                                        });
-                                }
-                                ui.end_row();
-                            }
-                        });
-                    });   // ScrollArea (horizontal, attraction matrix)
+                    draw_attraction_grid(ui, sim, "attraction_scroll");
                     }   // else: matrix not popped out
                 });   // CollapsingHeader (Attraction Matrix)
             });   // ScrollArea::vertical (outer)
@@ -1220,7 +1170,7 @@ pub fn draw_appearance_overlay(
                     .step_by(0.5),
             )
             .on_hover_text(
-                "Visual radius of each particle in world units.  \
+                "Visual radius of each particle in pixels. \
                  Enable Auto Radius to scale automatically with particle count.",
             );
             if sim.auto_particle_size {
@@ -1392,6 +1342,114 @@ pub fn draw_appearance_overlay(
     resp
 }
 
+/// Render the attraction matrix grid, shared by the docked panel and the pop-out window.
+///
+/// `id_salt` must be unique per call site so egui can distinguish the ScrollArea and Grid IDs.
+fn draw_attraction_grid(ui: &mut egui::Ui, sim: &mut SimulationState, id_salt: &str) {
+    let n = sim.species_count;
+    let col_width = if n <= 8 { 36.0 } else { 22.0 };
+
+    egui::ScrollArea::horizontal()
+        .id_salt(id_salt)
+        .show(ui, |ui| {
+            egui::Grid::new(format!("{id_salt}_grid"))
+                .min_col_width(col_width)
+                .show(ui, |ui| {
+                    ui.label("");
+                    for j in 0..n {
+                        ui.colored_label(species_color(j, &sim.palette), format!("S{}", j + 1));
+                    }
+                    ui.end_row();
+
+                    for i in 0..n {
+                        ui.colored_label(species_color(i, &sim.palette), format!("S{}", i + 1));
+                        for j in 0..n {
+                            let v = sim.attraction[i * MAX_SPECIES + j];
+                            let bg = attraction_cell_color(v);
+                            egui::Frame::new()
+                                .fill(bg)
+                                .inner_margin(egui::Margin::same(2))
+                                .show(ui, |ui| {
+                                    ui.visuals_mut().widgets.inactive.weak_bg_fill =
+                                        egui::Color32::TRANSPARENT;
+                                    let resp = ui.add(
+                                        egui::DragValue::new(
+                                            &mut sim.attraction[i * MAX_SPECIES + j],
+                                        )
+                                        .range(-1.0_f32..=1.0_f32)
+                                        .speed(0.01)
+                                        .custom_formatter(|n, _| {
+                                            let pct = n * 100.0;
+                                            if pct >= 0.0 {
+                                                format!("+{pct:.1}")
+                                            } else {
+                                                format!("{pct:.1}")
+                                            }
+                                        })
+                                        .custom_parser(|s| {
+                                            s.trim()
+                                                .trim_end_matches('%')
+                                                .trim()
+                                                .parse::<f64>()
+                                                .ok()
+                                                .map(|v| v / 100.0)
+                                        }),
+                                    );
+                                    if resp.changed() {
+                                        sim.mark_attraction_dirty();
+                                    }
+                                });
+                        }
+                        ui.end_row();
+                    }
+
+                    if sim.border_mode == 3 {
+                        ui.colored_label(egui::Color32::GRAY, "Wall");
+                        for j in 0..n {
+                            let bg = attraction_cell_color(
+                                sim.attraction[MAX_SPECIES * MAX_SPECIES + j],
+                            );
+                            egui::Frame::new()
+                                .fill(bg)
+                                .inner_margin(egui::Margin::same(2))
+                                .show(ui, |ui| {
+                                    ui.visuals_mut().widgets.inactive.weak_bg_fill =
+                                        egui::Color32::TRANSPARENT;
+                                    let resp = ui.add(
+                                        egui::DragValue::new(
+                                            &mut sim.attraction
+                                                [MAX_SPECIES * MAX_SPECIES + j],
+                                        )
+                                        .range(-1.0_f32..=1.0_f32)
+                                        .speed(0.01)
+                                        .custom_formatter(|n, _| {
+                                            let pct = n * 100.0;
+                                            if pct >= 0.0 {
+                                                format!("+{pct:.1}")
+                                            } else {
+                                                format!("{pct:.1}")
+                                            }
+                                        })
+                                        .custom_parser(|s| {
+                                            s.trim()
+                                                .trim_end_matches('%')
+                                                .trim()
+                                                .parse::<f64>()
+                                                .ok()
+                                                .map(|v| v / 100.0)
+                                        }),
+                                    );
+                                    if resp.changed() {
+                                        sim.mark_attraction_dirty();
+                                    }
+                                });
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
 /// Draw the pop-out Attraction Matrix window.
 ///
 /// Only called when `open` is true (matrix is popped out of the main panel).
@@ -1415,98 +1473,7 @@ pub fn draw_matrix_window(ctx: &egui::Context, sim: &mut SimulationState, open: 
                 randomize = true;
             }
 
-            let n = sim.species_count;
-            let col_width = if n <= 8 { 36.0 } else { 22.0 };
-
-            egui::ScrollArea::horizontal()
-                .id_salt("matrix_window_scroll")
-                .show(ui, |ui| {
-                    egui::Grid::new("matrix_window_grid")
-                        .min_col_width(col_width)
-                        .show(ui, |ui| {
-                            ui.label("");
-                            for j in 0..n {
-                                ui.colored_label(
-                                    species_color(j, &sim.palette),
-                                    format!("S{}", j + 1),
-                                );
-                            }
-                            ui.end_row();
-
-                            for i in 0..n {
-                                ui.colored_label(
-                                    species_color(i, &sim.palette),
-                                    format!("S{}", i + 1),
-                                );
-                                for j in 0..n {
-                                    let v = sim.attraction[i * MAX_SPECIES + j];
-                                    let bg = attraction_cell_color(v);
-                                    egui::Frame::new()
-                                        .fill(bg)
-                                        .inner_margin(egui::Margin::same(2))
-                                        .show(ui, |ui| {
-                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
-                                                egui::Color32::TRANSPARENT;
-                                            let r = ui.add(
-                                                egui::DragValue::new(
-                                                    &mut sim.attraction[i * MAX_SPECIES + j],
-                                                )
-                                                .range(-1.0_f32..=1.0_f32)
-                                                .speed(0.01)
-                                                .custom_formatter(|n, _| {
-                                                    if n >= 0.0 {
-                                                        format!(" {n:.4}")
-                                                    } else {
-                                                        format!("{n:.4}")
-                                                    }
-                                                })
-                                                .custom_parser(|s| s.trim().parse().ok()),
-                                            );
-                                            if r.changed() {
-                                                sim.mark_attraction_dirty();
-                                            }
-                                        });
-                                }
-                                ui.end_row();
-                            }
-
-                            if sim.border_mode == 3 {
-                                ui.colored_label(egui::Color32::GRAY, "Wall");
-                                for j in 0..n {
-                                    let bg = attraction_cell_color(
-                                        sim.attraction[MAX_SPECIES * MAX_SPECIES + j],
-                                    );
-                                    egui::Frame::new()
-                                        .fill(bg)
-                                        .inner_margin(egui::Margin::same(2))
-                                        .show(ui, |ui| {
-                                            ui.visuals_mut().widgets.inactive.weak_bg_fill =
-                                                egui::Color32::TRANSPARENT;
-                                            let r = ui.add(
-                                                egui::DragValue::new(
-                                                    &mut sim.attraction
-                                                        [MAX_SPECIES * MAX_SPECIES + j],
-                                                )
-                                                .range(-1.0_f32..=1.0_f32)
-                                                .speed(0.01)
-                                                .custom_formatter(|n, _| {
-                                                    if n >= 0.0 {
-                                                        format!(" {n:.4}")
-                                                    } else {
-                                                        format!("{n:.4}")
-                                                    }
-                                                })
-                                                .custom_parser(|s| s.trim().parse().ok()),
-                                            );
-                                            if r.changed() {
-                                                sim.mark_attraction_dirty();
-                                            }
-                                        });
-                                }
-                                ui.end_row();
-                            }
-                        });
-                });
+            draw_attraction_grid(ui, sim, "matrix_window_scroll");
         });
 
     randomize
