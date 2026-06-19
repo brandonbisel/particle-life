@@ -10,6 +10,8 @@
 
 /// Maximum number of species supported by the attraction matrix and PALETTE.
 pub const MAX_SPECIES: usize = 16;
+/// Maximum number of permanent field attractors/repulsors.
+pub const MAX_ATTRACTORS: usize = 64;
 /// Hard cap on the GPU particle buffer. Raising it increases VRAM by ~24 bytes/particle.
 pub const MAX_PARTICLES: usize = 2_000_000;
 // cell = r_max_norm/2, so grid_w = floor(2/r_max_norm).
@@ -70,8 +72,31 @@ struct SimParams {
     // 0 = Wrap (torus), 1 = Repel (spring wall), 2 = Static (hard wall)
     border_mode: u32,
     border_repel_strength: f32, // multiplier on repel wall force; default 0.3
-    _pad: [u32; 2],             // pad to 64 bytes (4 × 16)
+    speed_limit: f32,           // fraction of r_max a particle may travel per frame
+    n_attractors: u32,          // number of active permanent field attractors (was _pad)
 }
+
+/// A permanent force emitter placed in world space.  Stored CPU-side; uploaded to the GPU each frame.
+///
+/// `pos` is in normalised \[0,1\]² world space.  `strength` is per-species: positive attracts,
+/// negative repels, zero ignores.  `velocity` drives drift (world-units per second); \[0,0\] = static.
+#[derive(Clone)]
+pub struct AttractorDef {
+    pub pos: [f32; 2],
+    pub range: f32,
+    pub strength: [f32; MAX_SPECIES],
+    pub velocity: [f32; 2],
+}
+
+/// GPU-layout version of [`AttractorDef`] uploaded to binding 5 of the force pass.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GpuAttractor {
+    pos: [f32; 2],       // 8 bytes
+    range: f32,          // 4 bytes
+    _pad: f32,           // 4 bytes (alignment)
+    strength: [f32; 16], // 64 bytes  (MAX_SPECIES = 16)
+} // Total: 80 bytes
 
 /// All CPU-side simulation state plus the GPU buffers and compute pipelines.
 ///
@@ -90,8 +115,15 @@ pub struct SimulationState {
     pub friction: f32,
     /// Global scale factor applied to all inter-particle forces.
     pub force_scale: f32,
-    /// Particle render radius in world units.
+    /// Maximum distance a particle may travel per frame, as a fraction of `r_max`.
+    /// Prevents tunnelling; 0.25 means a particle at top speed crosses the interaction
+    /// zone in ~4 frames.
+    pub speed_limit: f32,
+    /// Particle render radius in world units (used when `auto_particle_size` is false).
     pub particle_radius: f32,
+    /// When true, the effective radius is computed from particle count and world area so that
+    /// visual coverage stays constant.  The stored `particle_radius` is ignored.
+    pub auto_particle_size: bool,
     /// Row-major attraction coefficients.
     ///
     /// `[0..256]`: the N×N particle–particle matrix; `attraction[i * MAX_SPECIES + j]` is the
@@ -103,6 +135,11 @@ pub struct SimulationState {
     pub palette: [u32; 16],
     /// When true the simulation clock is frozen; no compute dispatches are issued.
     pub paused: bool,
+    /// One-shot flag set by the UI/keyboard to advance exactly one frame while paused.
+    /// Cleared by `app.rs` immediately after the dispatch completes.
+    pub step_requested: bool,
+    /// Per-species render visibility; hidden species are uploaded with alpha = 0.
+    pub species_visible: [bool; MAX_SPECIES],
     /// Active border behaviour: 0 = Wrap (torus), 1 = Repel (spring wall), 2 = Static (hard wall), 3 = Matrix.
     pub border_mode: u32,
     /// Multiplier applied to the spring-wall force in Repel mode.
@@ -142,6 +179,9 @@ pub struct SimulationState {
     // Uses Cell so dispatch (&self) can clear it without &mut self.
     attraction_dirty: std::cell::Cell<bool>,
 
+    /// Permanent force emitters placed in world space.  Survive respawns; cleared only explicitly.
+    pub attractors: Vec<AttractorDef>,
+
     gpu_particle_count: u32, // may exceed particles.len() after spawn_particles calls
     particles: Vec<Particle>, // CPU copy used for respawn seeding only
     rng: Rng,
@@ -149,6 +189,7 @@ pub struct SimulationState {
     particle_buf: wgpu::Buffer,
     params_buf: wgpu::Buffer,
     attraction_buf: wgpu::Buffer,
+    attractor_buf: wgpu::Buffer,
     cell_counts_buf: wgpu::Buffer, // atomic u32 per cell; cleared each frame
     #[allow(dead_code)]
     cell_offsets_buf: wgpu::Buffer, // exclusive prefix sum; MAX_GRID_CELLS+1 entries
@@ -193,6 +234,22 @@ impl SimulationState {
     /// `world_width / world_height` — passed to the shader to correct for non-square worlds.
     pub fn world_aspect(&self) -> f32 {
         self.world_width / self.world_height
+    }
+
+    /// Returns the particle radius to use for rendering.
+    ///
+    /// When `auto_particle_size` is true, computes a radius that keeps ~4% of the world area
+    /// covered by particle disks, clamped to `[0.5, 12.0]`.  This keeps contrast good across
+    /// the full particle-count range.  When false, returns the manually set `particle_radius`.
+    pub fn effective_particle_radius(&self) -> f32 {
+        if self.auto_particle_size {
+            let area = self.world_width * self.world_height;
+            (0.04 * area / (self.particle_count as f32 * std::f32::consts::PI))
+                .sqrt()
+                .clamp(0.5, 12.0)
+        } else {
+            self.particle_radius
+        }
     }
 
     /// Adjust world size toward [`perf_target_fps`](Self::perf_target_fps) using a proportional
@@ -333,6 +390,14 @@ impl SimulationState {
             mapped_at_creation: false,
         });
 
+        // GpuAttractor = 80 bytes; pre-allocated for MAX_ATTRACTORS slots.
+        let attractor_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Attractor Buffer"),
+            size: (MAX_ATTRACTORS * std::mem::size_of::<GpuAttractor>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         // ── Bind group layouts ───────────────────────────────────────────────
         let count_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Count BGL"),
@@ -389,6 +454,7 @@ impl SimulationState {
                 storage_bgle(2, true),  // attraction (read)
                 storage_bgle(3, true),  // cell_offsets (read)
                 storage_bgle(4, true),  // sorted_entries (read — sequential, cache-friendly)
+                storage_bgle(5, true),  // attractors (read — permanent field emitters)
             ],
         });
 
@@ -579,6 +645,10 @@ impl SimulationState {
                     binding: 4,
                     resource: sorted_entries_buf.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: attractor_buf.as_entire_binding(),
+                },
             ],
         });
 
@@ -594,10 +664,14 @@ impl SimulationState {
             r_max: 0.08,
             friction: 0.5,
             force_scale: 0.007,
+            speed_limit: 0.25,
             particle_radius: 1.5,
+            auto_particle_size: true,
             attraction,
             palette: PALETTE_DEFAULT,
             paused: false,
+            step_requested: false,
+            species_visible: [true; MAX_SPECIES],
             border_mode: 0,
             border_repel_strength: 5.0,
             world_width,
@@ -613,12 +687,14 @@ impl SimulationState {
             mouse_range: 0.1,
             random_species_dist: false,
             attraction_dirty: std::cell::Cell::new(true),
+            attractors: Vec::new(),
             gpu_particle_count: 0,
             particles: Vec::new(),
             rng,
             particle_buf,
             params_buf,
             attraction_buf,
+            attractor_buf,
             cell_counts_buf,
             cell_offsets_buf,
             block_sums_buf,
@@ -766,7 +842,8 @@ impl SimulationState {
                 mouse_range: self.mouse_range,
                 border_mode: self.border_mode,
                 border_repel_strength: self.border_repel_strength,
-                _pad: [0; 2],
+                speed_limit: self.speed_limit,
+                n_attractors: self.attractors.len() as u32,
             }),
         );
         if self.attraction_dirty.get() {
@@ -776,6 +853,21 @@ impl SimulationState {
                 bytemuck::cast_slice(&self.attraction),
             );
             self.attraction_dirty.set(false);
+        }
+
+        // Upload permanent attractor data (always re-uploaded; positions may have drifted).
+        if !self.attractors.is_empty() {
+            let gpu: Vec<GpuAttractor> = self
+                .attractors
+                .iter()
+                .map(|a| GpuAttractor {
+                    pos: a.pos,
+                    range: a.range,
+                    _pad: 0.0,
+                    strength: a.strength,
+                })
+                .collect();
+            queue.write_buffer(&self.attractor_buf, 0, bytemuck::cast_slice(&gpu));
         }
 
         // Clear only the cells in use (not the full MAX_GRID_CELLS allocation).
@@ -852,6 +944,7 @@ impl SimulationState {
         self.world_width = preset.world_width;
         self.world_height = preset.world_height;
         self.particle_radius = preset.particle_radius;
+        self.auto_particle_size = preset.auto_particle_size;
         self.r_min = preset.r_min;
         self.r_max = preset.r_max;
         self.friction = preset.friction;
@@ -888,6 +981,7 @@ impl SimulationState {
             }
         }
         self.attraction_dirty.set(true);
+        self.species_visible = [true; MAX_SPECIES];
         if let Some(ref pal) = preset.palette {
             for (i, &c) in pal.iter().enumerate().take(MAX_SPECIES) {
                 self.palette[i] = c;
@@ -895,6 +989,25 @@ impl SimulationState {
         } else {
             self.palette = PALETTE_DEFAULT;
         }
+
+        // Load attractors from preset, padding or truncating per-species strengths as needed.
+        self.attractors.clear();
+        for ac in &preset.attractors {
+            let mut strength = [0.0f32; MAX_SPECIES];
+            for (i, &v) in ac.strength.iter().enumerate().take(MAX_SPECIES) {
+                strength[i] = v;
+            }
+            self.attractors.push(AttractorDef {
+                pos: [ac.x, ac.y],
+                range: ac.range,
+                strength,
+                velocity: [ac.vel_x, ac.vel_y],
+            });
+            if self.attractors.len() >= MAX_ATTRACTORS {
+                break;
+            }
+        }
+
         self.respawn(queue);
     }
 
@@ -915,6 +1028,7 @@ impl SimulationState {
             world_width: self.world_width,
             world_height: self.world_height,
             particle_radius: self.particle_radius,
+            auto_particle_size: self.auto_particle_size,
             r_min: self.r_min,
             r_max: self.r_max,
             friction: self.friction,
@@ -945,6 +1059,18 @@ impl SimulationState {
                 }
             },
             palette: Some(self.palette.to_vec()),
+            attractors: self
+                .attractors
+                .iter()
+                .map(|a| crate::config::AttractorConfig {
+                    x: a.pos[0],
+                    y: a.pos[1],
+                    range: a.range,
+                    strength: a.strength[..self.species_count].to_vec(),
+                    vel_x: a.velocity[0],
+                    vel_y: a.velocity[1],
+                })
+                .collect(),
         }
     }
 
@@ -954,6 +1080,7 @@ impl SimulationState {
         self.r_max = 0.08;
         self.friction = 0.5;
         self.force_scale = 0.007;
+        self.speed_limit = 0.25;
         self.particle_radius = 1.5;
     }
 
@@ -1015,6 +1142,89 @@ impl SimulationState {
     /// Number of particles currently active on the GPU, including any transiently spawned ones.
     pub fn particle_count_gpu(&self) -> u32 {
         self.gpu_particle_count
+    }
+
+    /// Advance attractor drift positions by `dt` seconds.
+    ///
+    /// In wrap mode (border_mode 0) attractors torus-wrap at the \[0,1\]² boundary.
+    /// In all other modes they bounce off the walls.
+    /// Call this each frame before [`dispatch`](Self::dispatch).
+    pub fn tick_attractors(&mut self, dt: f32) {
+        let max_speed = self.r_max_normalised() / dt * self.speed_limit;
+        for attr in &mut self.attractors {
+            if attr.velocity == [0.0, 0.0] {
+                continue;
+            }
+            let spd =
+                (attr.velocity[0] * attr.velocity[0] + attr.velocity[1] * attr.velocity[1]).sqrt();
+            if spd > max_speed {
+                let scale = max_speed / spd;
+                attr.velocity[0] *= scale;
+                attr.velocity[1] *= scale;
+            }
+            attr.pos[0] += attr.velocity[0] * dt;
+            attr.pos[1] += attr.velocity[1] * dt;
+            if self.border_mode == 0 {
+                attr.pos[0] = attr.pos[0].rem_euclid(1.0);
+                attr.pos[1] = attr.pos[1].rem_euclid(1.0);
+            } else {
+                // Bounce off walls in repel/static/matrix modes.
+                if attr.pos[0] < 0.0 {
+                    attr.pos[0] = -attr.pos[0];
+                    attr.velocity[0] = attr.velocity[0].abs();
+                }
+                if attr.pos[0] > 1.0 {
+                    attr.pos[0] = 2.0 - attr.pos[0];
+                    attr.velocity[0] = -attr.velocity[0].abs();
+                }
+                if attr.pos[1] < 0.0 {
+                    attr.pos[1] = -attr.pos[1];
+                    attr.velocity[1] = attr.velocity[1].abs();
+                }
+                if attr.pos[1] > 1.0 {
+                    attr.pos[1] = 2.0 - attr.pos[1];
+                    attr.velocity[1] = -attr.velocity[1].abs();
+                }
+            }
+        }
+    }
+
+    /// Add a permanent field attractor.  No-ops when [`MAX_ATTRACTORS`] is already reached.
+    pub fn add_attractor(&mut self, def: AttractorDef) {
+        if self.attractors.len() < MAX_ATTRACTORS {
+            self.attractors.push(def);
+        }
+    }
+
+    /// Remove the attractor closest to `pos` if it is within `threshold` world-units.
+    ///
+    /// Returns `true` if an attractor was removed.
+    pub fn remove_nearest_attractor(&mut self, pos: [f32; 2], threshold: f32) -> bool {
+        let aspect = self.world_aspect();
+        let threshold_sq = threshold * threshold;
+        let mut best_idx = None;
+        let mut best_dsq = f32::MAX;
+        for (i, attr) in self.attractors.iter().enumerate() {
+            let dx = (attr.pos[0] - pos[0]) * aspect;
+            let dy = attr.pos[1] - pos[1];
+            let dsq = dx * dx + dy * dy;
+            if dsq < best_dsq {
+                best_dsq = dsq;
+                best_idx = Some(i);
+            }
+        }
+        if let Some(idx) = best_idx
+            && best_dsq <= threshold_sq
+        {
+            self.attractors.remove(idx);
+            return true;
+        }
+        false
+    }
+
+    /// Remove all permanent field attractors.
+    pub fn clear_attractors(&mut self) {
+        self.attractors.clear();
     }
 }
 
@@ -1141,6 +1351,11 @@ mod tests {
     #[test]
     fn sim_params_is_64_bytes() {
         assert_eq!(mem::size_of::<SimParams>(), 64);
+    }
+
+    #[test]
+    fn gpu_attractor_is_80_bytes() {
+        assert_eq!(mem::size_of::<GpuAttractor>(), 80);
     }
 
     #[test]

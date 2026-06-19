@@ -69,6 +69,6 @@ fn fs_main(in: VOut) -> @location(0) vec4<f32> {
     if d > 1.0 {
         discard;
     }
-    let a = smoothstep(1.0, 0.75, d);
+    let a = smoothstep(1.0, 0.75, d) * in.color.a;
     return vec4<f32>(in.color.rgb * a, a);
 }

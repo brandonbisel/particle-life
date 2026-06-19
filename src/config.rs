@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 pub const SESSION_PATH: &str = "session.toml";
 /// Directory scanned for user-created `*.toml` preset files.
 pub const PRESETS_DIR: &str = "presets";
+/// Directory scanned for user-created `*.toml` theme files.
+pub const THEMES_DIR: &str = "themes";
 /// Directory where ad-hoc screenshots are saved.
 pub const SCREENSHOTS_DIR: &str = "screenshots";
 /// Path to the persisted appearance/theme config.
@@ -22,17 +24,125 @@ pub const APPEARANCE_PATH: &str = "appearance.toml";
 
 // ── Appearance ────────────────────────────────────────────────────────────────
 
-/// UI colour theme choices shown in the Appearance panel.
-#[derive(Clone, Copy, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+/// UI colour theme selection.
+///
+/// `System`/`Dark`/`Light` use egui's built-in visuals; `Named` looks up a
+/// [`ThemeDef`] by name from the bundled or user theme list.
+///
+/// TOML serialises as a plain string: `System`, `Dark`, `Light`, or the theme
+/// name (e.g. `Midnight`).  This means old `appearance.toml` files that had
+/// `Midnight`, `Nord`, or `Catppuccin` continue to load correctly.
+#[derive(Clone, PartialEq, Default, Debug)]
 pub enum UiTheme {
     /// Follow the OS dark/light preference.
     #[default]
     System,
     Dark,
     Light,
-    Midnight,
-    Nord,
-    Catppuccin,
+    /// Any named theme (builtin or user): looked up in the loaded theme list.
+    Named(String),
+}
+
+impl serde::Serialize for UiTheme {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(match self {
+            UiTheme::System => "System",
+            UiTheme::Dark => "Dark",
+            UiTheme::Light => "Light",
+            UiTheme::Named(n) => n.as_str(),
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for UiTheme {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.as_str() {
+            "System" => UiTheme::System,
+            "Dark" => UiTheme::Dark,
+            "Light" => UiTheme::Light,
+            _ => UiTheme::Named(s),
+        })
+    }
+}
+
+// ── ThemeDef ──────────────────────────────────────────────────────────────────
+
+/// A named colour theme for the egui UI, loadable from a TOML file.
+///
+/// All colour fields are `[R, G, B]` in sRGB (0–255).
+/// Themes can be bundled (compiled in via `include_str!`) or loaded at runtime
+/// from the `themes/` directory, enabling user-shareable theme files.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct ThemeDef {
+    pub name: String,
+    /// Starting visuals: `"dark"` or `"light"`.
+    pub base: String,
+    pub panel_fill: [u8; 3],
+    pub window_fill: [u8; 3],
+    pub window_stroke: [u8; 3],
+    pub inactive_bg: [u8; 3],
+    pub hovered_bg: [u8; 3],
+    pub active_bg: [u8; 3],
+    pub button_bg: [u8; 3],
+    pub selection_bg: [u8; 3],
+    /// Optional text color override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<[u8; 3]>,
+}
+
+/// Returns themes compiled into the binary from `assets/themes/*.toml`.
+pub fn bundled_themes() -> Vec<ThemeDef> {
+    let sources: &[(&str, &str)] = &[
+        ("Midnight", include_str!("../assets/themes/Midnight.toml")),
+        ("Nord", include_str!("../assets/themes/Nord.toml")),
+        (
+            "Catppuccin",
+            include_str!("../assets/themes/Catppuccin.toml"),
+        ),
+    ];
+    sources
+        .iter()
+        .filter_map(|(name, src)| match toml::from_str::<ThemeDef>(src) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                log::warn!("Bundled theme '{name}' failed to parse: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// Scan `THEMES_DIR` for `*.toml` files and parse them as [`ThemeDef`]s.
+///
+/// User themes with the same name as a bundled theme override the bundled one
+/// when the caller merges the two lists (user list wins by convention).
+pub fn load_themes_dir() -> Vec<ThemeDef> {
+    let dir = std::path::Path::new(THEMES_DIR);
+    if !dir.is_dir() {
+        return vec![];
+    }
+    let mut paths: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map(|e| e == "toml").unwrap_or(false))
+        .collect();
+    paths.sort();
+    paths
+        .iter()
+        .filter_map(|p| {
+            let src = std::fs::read_to_string(p).ok()?;
+            match toml::from_str::<ThemeDef>(&src) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    log::warn!("Skipping theme {p:?}: {e}");
+                    None
+                }
+            }
+        })
+        .collect()
 }
 
 /// Persisted appearance preferences (theme + world background colour).
@@ -53,7 +163,15 @@ fn default_bg() -> [u8; 3] {
 }
 
 fn default_overlay_alpha() -> u8 {
-    255
+    217 // 85%
+}
+
+fn default_auto_particle_size() -> bool {
+    true
+}
+
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
 }
 
 impl Default for AppearanceConfig {
@@ -113,6 +231,11 @@ pub struct Preset {
     /// World height in simulation units.  See `world_width`.
     pub world_height: f32,
     pub particle_radius: f32,
+    /// When true the renderer auto-scales `particle_radius` so that visual coverage stays
+    /// constant across particle counts and world sizes (default).  When false the stored
+    /// `particle_radius` is used directly.
+    #[serde(default = "default_auto_particle_size")]
+    pub auto_particle_size: bool,
     /// Hard-core repulsion radius as a fraction of [`BASE_WORLD_HEIGHT`](crate::simulation::BASE_WORLD_HEIGHT).
     pub r_min: f32,
     /// Outer interaction cutoff radius as a fraction of [`BASE_WORLD_HEIGHT`](crate::simulation::BASE_WORLD_HEIGHT).
@@ -144,6 +267,28 @@ pub struct Preset {
     /// Per-species packed sRGB colours (`0xFF_BB_GG_RR`). Optional; absent means use default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub palette: Option<Vec<u32>>,
+    /// Permanent force emitters placed in world space.  Absent (or empty) means no fixed fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attractors: Vec<AttractorConfig>,
+}
+
+/// A serialisable description of one permanent field attractor/repulsor.
+///
+/// Stored in [`Preset`] so attractor layouts can be saved with presets and
+/// restored across sessions.  `strength` has one entry per species (values in
+/// `[-1, 1]` or beyond); shorter slices are zero-padded on load.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct AttractorConfig {
+    pub x: f32,
+    pub y: f32,
+    pub range: f32,
+    /// Per-species signed strength.  Length should equal `species_count` at save time;
+    /// shorter slices are zero-padded when loading, longer slices are truncated.
+    pub strength: Vec<f32>,
+    #[serde(default, skip_serializing_if = "crate::config::is_zero")]
+    pub vel_x: f32,
+    #[serde(default, skip_serializing_if = "crate::config::is_zero")]
+    pub vel_y: f32,
 }
 
 impl Preset {
@@ -156,6 +301,7 @@ impl Preset {
             world_width: 1280.0,
             world_height: 720.0,
             particle_radius: 1.5,
+            auto_particle_size: true,
             r_min: 0.025,
             r_max: 0.08,
             friction: 0.5,
@@ -169,6 +315,7 @@ impl Preset {
             attraction,
             wall_attraction: None,
             palette: None,
+            attractors: Vec::new(),
         }
     }
 }
@@ -264,6 +411,20 @@ pub fn bundled_presets() -> Vec<Preset> {
             "Snakes Rings Ships",
             include_str!("../assets/presets/Snakes Rings Ships.toml"),
         ),
+        (
+            "Grand Chain",
+            include_str!("../assets/presets/Grand Chain.toml"),
+        ),
+        (
+            "Harlequin",
+            include_str!("../assets/presets/Harlequin.toml"),
+        ),
+        ("Crystal", include_str!("../assets/presets/Crystal.toml")),
+        ("Storm", include_str!("../assets/presets/Storm.toml")),
+        ("Rings", include_str!("../assets/presets/Rings.toml")),
+        ("Swarm", include_str!("../assets/presets/Swarm.toml")),
+        ("Nebula", include_str!("../assets/presets/Nebula.toml")),
+        ("Loners", include_str!("../assets/presets/Loners.toml")),
     ];
     sources
         .iter()
@@ -438,6 +599,55 @@ mod tests {
     fn bundled_presets_are_valid() {
         for preset in bundled_presets() {
             assert_preset_invariants(&preset);
+        }
+    }
+
+    #[test]
+    fn bundled_themes_parse() {
+        let themes = bundled_themes();
+        assert_eq!(themes.len(), 3, "expected 3 bundled themes");
+        let names: Vec<&str> = themes.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"Midnight"), "Midnight theme missing");
+        assert!(names.contains(&"Nord"), "Nord theme missing");
+        assert!(names.contains(&"Catppuccin"), "Catppuccin theme missing");
+        for t in &themes {
+            assert!(
+                t.base == "dark" || t.base == "light",
+                "theme '{}' has invalid base '{}'",
+                t.name,
+                t.base
+            );
+        }
+    }
+
+    #[test]
+    fn ui_theme_serde_round_trip() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Wrap {
+            theme: UiTheme,
+        }
+
+        let cases = [
+            (UiTheme::System, "theme = \"System\"\n"),
+            (UiTheme::Dark, "theme = \"Dark\"\n"),
+            (UiTheme::Light, "theme = \"Light\"\n"),
+            (UiTheme::Named("Midnight".into()), "theme = \"Midnight\"\n"),
+            (UiTheme::Named("MyTheme".into()), "theme = \"MyTheme\"\n"),
+        ];
+        for (theme, expected_toml) in cases {
+            let serialized = toml::to_string_pretty(&Wrap {
+                theme: theme.clone(),
+            })
+            .expect("serialize failed");
+            assert_eq!(
+                serialized, expected_toml,
+                "unexpected TOML for {expected_toml:?}"
+            );
+            let restored: Wrap = toml::from_str(&serialized).expect("deserialize failed");
+            assert_eq!(
+                restored.theme, theme,
+                "round-trip mismatch for {expected_toml:?}"
+            );
         }
     }
 

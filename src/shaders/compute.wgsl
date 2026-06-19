@@ -34,8 +34,15 @@ struct SimParams {
     mouse_range:    f32,
     border_mode:             u32,
     border_repel_strength:   f32,
-    _pad2:                   u32,
-    _pad3:                   u32,
+    speed_limit:             f32,
+    n_attractors:            u32,
+}
+
+struct GpuAttractor {
+    pos:      vec2<f32>,
+    range:    f32,
+    _pad:     f32,
+    strength: array<f32, 16>,  // one per species (MAX_SPECIES = 16)
 }
 
 struct SortedEntry {
@@ -49,6 +56,7 @@ struct SortedEntry {
 @group(0) @binding(2) var<storage, read>       attraction:     array<f32>;
 @group(0) @binding(3) var<storage, read>       cell_offsets:   array<u32>;
 @group(0) @binding(4) var<storage, read>       sorted_entries: array<SortedEntry>;
+@group(0) @binding(5) var<storage, read>       attractors:     array<GpuAttractor>;
 
 override TILE: u32 = 64u;
 override MAX_SPECIES: u32 = 16u;
@@ -234,6 +242,23 @@ fn cs_main(
         }
     }
 
+    // Permanent field attractors/repulsors.
+    for (var ai: u32 = 0u; ai < params.n_attractors; ai++) {
+        let attr       = attractors[ai];
+        let sp_strength = attr.strength[subj.species];
+        if sp_strength == 0.0 { continue; }
+        let a_delta = select(attr.pos - subj.position,
+                             torus_delta(subj.position, attr.pos),
+                             wrapping);
+        let a_dx  = a_delta.x * aspect;
+        let a_dsq = a_dx * a_dx + a_delta.y * a_delta.y;
+        if a_dsq > 1e-8 && a_dsq < attr.range * attr.range {
+            let a_dist = sqrt(a_dsq);
+            let t = 1.0 - a_dist / attr.range;
+            vel += (a_delta / a_dist) * (sp_strength * t * t * params.dt);
+        }
+    }
+
     // Border repel force (mode 1): spring pushes particles away from each wall within r_max.
     if params.border_mode == 1u {
         // border_repel_strength is in world-units/s at the wall surface.
@@ -287,7 +312,7 @@ fn cs_main(
     }
 
     // CFL guard.
-    let max_speed = params.r_max / params.dt * 0.25;
+    let max_speed = params.r_max / params.dt * params.speed_limit;
     let spd = length(vel);
     vel *= min(1.0, max_speed / max(spd, 1e-6));
 

@@ -43,6 +43,15 @@ pub struct CliArgs {
     /// Attraction matrix share code (base64, same format as the in-app share box).
     #[arg(long, value_name = "CODE")]
     pub matrix: Option<String>,
+
+    /// Save a screenshot to PATH then exit. Combine with --preset and --capture-delay
+    /// to automate gallery thumbnail generation for new bundled presets.
+    #[arg(long, value_name = "PATH")]
+    pub capture: Option<PathBuf>,
+
+    /// Seconds to run the simulation before taking the --capture screenshot (default: 5).
+    #[arg(long, value_name = "SECS", default_value_t = 5.0)]
+    pub capture_delay: f32,
 }
 
 fn parse_world_size(s: &str) -> Result<(u32, u32), String> {

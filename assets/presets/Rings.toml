@@ -1,0 +1,26 @@
+name = "Rings"
+description = "Two independent three-species pursuit cycles repel each other strongly, settling into two swirling multi-colour clusters on opposite sides of the field."
+particle_count = 8000
+species_count = 6
+world_width = 1280.0
+world_height = 720.0
+particle_radius = 1.5
+r_min = 0.025
+r_max = 0.12
+friction = 0.50
+force_scale = 0.013
+border_mode = 0
+border_repel_strength = 5.0
+
+# Row-major 6×6 matrix.
+# Triplet A (0→1→2→0): self-attract (0.4) + pursuit (next=+0.8, prev=-0.4) → coherent rotating cluster.
+# Triplet B (3→4→5→3): same structure.
+# Cross-triplet repulsion (-0.85) is strong enough to force spatial separation with this particle count.
+attraction = [
+     0.4,  0.8, -0.4, -0.85, -0.85, -0.85,
+    -0.4,  0.4,  0.8, -0.85, -0.85, -0.85,
+     0.8, -0.4,  0.4, -0.85, -0.85, -0.85,
+    -0.85, -0.85, -0.85,  0.4,  0.8, -0.4,
+    -0.85, -0.85, -0.85, -0.4,  0.4,  0.8,
+    -0.85, -0.85, -0.85,  0.8, -0.4,  0.4,
+]

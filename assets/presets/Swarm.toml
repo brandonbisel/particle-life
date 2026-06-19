@@ -1,0 +1,30 @@
+name = "Swarm"
+description = "Ten species paired into five two-colour schools; each school forms a compact blob that drifts independently, with gentle inter-school repulsion keeping them spaced apart."
+particle_count = 20000
+species_count = 10
+world_width = 1280.0
+world_height = 720.0
+particle_radius = 1.5
+r_min = 0.02
+r_max = 0.10
+friction = 0.70
+force_scale = 0.010
+border_mode = 0
+border_repel_strength = 5.0
+
+# Row-major 10×10 matrix.
+# Pairs: (0,1), (2,3), (4,5), (6,7), (8,9).
+# Within pair: strong self-attract (0.8) + partner-attract (0.6) → compact mixed blob.
+# Between pairs: very mild repulsion (-0.05) keeps schools gently spaced.
+attraction = [
+     0.8,  0.6, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,
+     0.6,  0.8, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,
+    -0.05, -0.05,  0.8,  0.6, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,
+    -0.05, -0.05,  0.6,  0.8, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,
+    -0.05, -0.05, -0.05, -0.05,  0.8,  0.6, -0.05, -0.05, -0.05, -0.05,
+    -0.05, -0.05, -0.05, -0.05,  0.6,  0.8, -0.05, -0.05, -0.05, -0.05,
+    -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,  0.8,  0.6, -0.05, -0.05,
+    -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,  0.6,  0.8, -0.05, -0.05,
+    -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,  0.8,  0.6,
+    -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05, -0.05,  0.6,  0.8,
+]

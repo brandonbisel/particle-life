@@ -1,0 +1,10 @@
+name = "Midnight"
+base = "dark"
+panel_fill     = [8,   10,  20]
+window_fill    = [10,  12,  25]
+window_stroke  = [40,  50,  80]
+inactive_bg    = [12,  15,  30]
+hovered_bg     = [20,  24,  45]
+active_bg      = [30,  36,  65]
+button_bg      = [40,  50,  90]
+selection_bg   = [30,  80, 170]

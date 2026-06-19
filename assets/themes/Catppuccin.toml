@@ -1,0 +1,12 @@
+# Colors from the Catppuccin Mocha palette by the Catppuccin org — catppuccin.com (MIT)
+name = "Catppuccin"
+base = "dark"
+panel_fill     = [24,  24,  37]
+window_fill    = [30,  30,  46]
+window_stroke  = [49,  50,  68]
+inactive_bg    = [30,  30,  46]
+hovered_bg     = [49,  50,  68]
+active_bg      = [58,  60,  78]
+button_bg      = [108, 112, 134]
+selection_bg   = [137, 180, 250]
+text           = [205, 214, 244]

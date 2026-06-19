@@ -29,28 +29,28 @@ Symbiosis is the structural inverse of Clusters — exercises cross-species attr
 | Display | 165 Hz |
 | OS | Linux (CachyOS) |
 
-### Suite Benchmark (v0.6.0)
+### Suite Benchmark (v0.7.0)
 
-| Preset    | Particles | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
-|-----------|----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
-| Clusters  |    10,000 |   6,093 |     325 |   6,546 |   0.16 | 90,914 |      15.0 | off   |
-| Clusters  |    50,000 |   1,807 |   1,173 |   5,969 |   0.55 | 26,933 |      15.0 | off   |
-| Clusters  |   100,000 |     765 |     532 |   1,281 |   1.31 | 11,289 |      15.0 | off   |
-| Clusters  |   500,000 |      60 |      54 |      65 |  16.65 |    901 |      15.0 | off   |
-| Chains    |    10,000 |   6,240 |   1,555 |   6,695 |   0.16 | 93,258 |      15.0 | off   |
-| Chains    |    50,000 |   2,386 |   1,308 |   4,731 |   0.42 | 35,649 |      15.0 | off   |
-| Chains    |   100,000 |     960 |     316 |   4,945 |   1.04 | 14,346 |      15.0 | off   |
-| Chains    |   500,000 |      60 |      58 |      62 |  16.65 |    901 |      15.0 | off   |
-| Ecosystem |    10,000 |   3,355 |     305 |   6,534 |   0.30 | 47,718 |      15.0 | off   |
-| Ecosystem |    50,000 |     831 |     340 |   1,822 |   1.20 | 11,125 |      15.0 | off   |
-| Ecosystem |   100,000 |     441 |     209 |     751 |   2.27 |  5,954 |      15.0 | off   |
-| Ecosystem |   500,000 |      31 |       4 |      53 |  32.62 |    243 |      15.2 | off   |
-| Symbiosis |    10,000 |   3,636 |     293 |   6,450 |   0.28 | 53,606 |      15.0 | off   |
-| Symbiosis |    50,000 |   1,012 |     263 |   1,485 |   0.99 | 14,957 |      15.0 | off   |
-| Symbiosis |   100,000 |     350 |     226 |     456 |   2.86 |  5,158 |      15.0 | off   |
-| Symbiosis |   500,000 |      34 |      28 |      38 |  29.54 |    507 |      15.0 | off   |
+| Preset    | Particles | Throughput | Avg FPS | Min FPS | Max FPS | Avg ms | Frames | Wall secs | VSync |
+|-----------|----------:|-----------:|--------:|--------:|--------:|-------:|-------:|----------:|-------|
+| Clusters  |    10,000 |      5,881 |   5,930 |     319 |   6,468 |   0.17 | 88,217 |      15.0 | off   |
+| Clusters  |    50,000 |      1,773 |   1,784 |     334 |   4,662 |   0.56 | 26,589 |      15.0 | off   |
+| Clusters  |   100,000 |        743 |     755 |     523 |   1,150 |   1.32 | 11,147 |      15.0 | off   |
+| Clusters  |   500,000 |         59 |      59 |      51 |      64 |  16.90 |    887 |      15.0 | off   |
+| Chains    |    10,000 |      6,052 |   6,081 |     367 |   6,516 |   0.16 | 90,774 |      15.0 | off   |
+| Chains    |    50,000 |      2,404 |   2,425 |     272 |   6,254 |   0.41 | 36,064 |      15.0 | off   |
+| Chains    |   100,000 |        964 |     966 |     549 |   1,718 |   1.04 | 14,456 |      15.0 | off   |
+| Chains    |   500,000 |         60 |      60 |      58 |      63 |  16.56 |    906 |      15.0 | off   |
+| Ecosystem |    10,000 |      3,146 |   3,331 |     293 |   6,303 |   0.30 | 47,193 |      15.0 | off   |
+| Ecosystem |    50,000 |        624 |     708 |     271 |   1,594 |   1.41 |  9,360 |      15.0 | off   |
+| Ecosystem |   100,000 |        387 |     433 |     174 |     781 |   2.31 |  5,800 |      15.0 | off   |
+| Ecosystem |   500,000 |         13 |      21 |       5 |      48 |  47.11 |    194 |      15.1 | off   |
+| Symbiosis |    10,000 |      3,750 |   3,800 |     960 |   6,459 |   0.26 | 56,248 |      15.0 | off   |
+| Symbiosis |    50,000 |        657 |     682 |     355 |   1,552 |   1.47 |  9,854 |      15.0 | off   |
+| Symbiosis |   100,000 |        358 |     368 |     194 |     546 |   2.72 |  5,370 |      15.0 | off   |
+| Symbiosis |   500,000 |         29 |      29 |      24 |      32 |  34.24 |    437 |      15.0 | off   |
 
-**500K performance (GPU-bound, most reliable):** Chains and Clusters hit ~60 tp (display-rate ceiling at this run); Symbiosis at 33.8 tp; Ecosystem at 16.0 tp with high frame-time variance (dense cluster hotspot — avg_fps inflates ~2× here due to fast frames between scatter events).
+**500K performance (GPU-bound, most reliable):** Clusters and Chains hit ~59–60 tp (display-rate ceiling); Symbiosis at 29.1 tp; Ecosystem at 12.8 tp with high frame-time variance (dense cluster hotspot — avg_fps inflates ~1.6× here due to fast frames between scatter events).
 
 ### Capacity Benchmark
 

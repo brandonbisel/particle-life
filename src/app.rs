@@ -18,7 +18,10 @@ use winit::{
 };
 
 use crate::{
-    benchmark, cli, config, icon, renderer, renderer::WgpuState, simulation::SimulationState, ui,
+    benchmark, cli, config, icon, renderer,
+    renderer::WgpuState,
+    simulation::{AttractorDef, MAX_SPECIES, SimulationState},
+    ui,
 };
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -74,6 +77,20 @@ fn apply_zoom(cam: &mut Camera, cursor_world: [f32; 2], factor: f32) {
     cam.zoom_factor = new_zoom;
 }
 
+/// Zoom `camera` by `factor` centered on the current cursor, respecting world aspect ratio.
+fn zoom_at_cursor(
+    camera: &mut Camera,
+    cursor_px: PhysicalPosition<f64>,
+    viewport: winit::dpi::PhysicalSize<u32>,
+    world_aspect: f32,
+    fit_zoom: f32,
+    factor: f32,
+) {
+    let sz = camera.zoom_factor * fit_zoom;
+    let cw = screen_to_world(cursor_px, viewport, camera, world_aspect, sz);
+    apply_zoom(camera, cw, factor);
+}
+
 // ── AppState ──────────────────────────────────────────────────────────────────
 
 /// Top-level winit [`ApplicationHandler`].
@@ -98,6 +115,81 @@ enum AutoBenchKind {
     Capacity,
 }
 
+struct PanState {
+    lmb_panning: bool,
+    mmb_panning: bool,
+    start_px: PhysicalPosition<f64>,
+    start_center: [f32; 2],
+}
+
+impl Default for PanState {
+    fn default() -> Self {
+        Self {
+            lmb_panning: false,
+            mmb_panning: false,
+            start_px: PhysicalPosition::new(0.0, 0.0),
+            start_center: [0.5, 0.5],
+        }
+    }
+}
+
+struct ToolState {
+    active: ui::Tool,
+    range: f32,
+    strength: f32,
+    spawn_species: Option<usize>,
+    spawn_rate: u32,
+    field_drag_start: Option<[f32; 2]>,
+    field_default_strength: f32,
+    field_species_strength: [f32; MAX_SPECIES],
+}
+
+impl Default for ToolState {
+    fn default() -> Self {
+        Self {
+            active: ui::Tool::Pan,
+            range: 0.1,
+            strength: 2.0,
+            spawn_species: None,
+            spawn_rate: 50,
+            field_drag_start: None,
+            field_default_strength: 2.0,
+            field_species_strength: [2.0; MAX_SPECIES],
+        }
+    }
+}
+
+struct GalleryState {
+    presets: Vec<config::Preset>,
+    selected: usize,
+    thumbnails: Vec<Option<egui::TextureHandle>>,
+    open: bool,
+}
+
+struct BenchmarkState {
+    runner: benchmark::BenchmarkRunner,
+    quick: benchmark::QuickBench,
+    capacity: benchmark::CapacityBench,
+    vsync: bool,
+    vsync_override: bool,
+    auto_kind: Option<AutoBenchKind>,
+    output: Option<std::path::PathBuf>,
+}
+
+impl Default for BenchmarkState {
+    fn default() -> Self {
+        Self {
+            runner: benchmark::BenchmarkRunner::new(),
+            quick: benchmark::QuickBench::new(),
+            capacity: benchmark::CapacityBench::new(),
+            vsync: true,
+            vsync_override: false,
+            auto_kind: None,
+            output: None,
+        }
+    }
+}
+
 struct AppState {
     // Simulation / rendering
     renderer: WgpuState,
@@ -109,39 +201,23 @@ struct AppState {
 
     // Camera
     camera: Camera,
-    fit_zoom: f32, // computed from world size + viewport; camera.zoom_factor is relative to this
+    fit_zoom: f32,
 
-    // Toolbar tool state
-    tool: ui::Tool,
-    tool_range: f32,
-    mouse_strength: f32,
+    // Toolbar + spawn tool
+    tool: ToolState,
 
-    // Spawn tool state
-    spawn_species: Option<usize>, // None = random species per particle
-    spawn_rate: u32,              // particles spawned per frame while LMB held
-
-    // Presets + persistence
-    preset_library: Vec<config::Preset>,
-    selected_preset: usize,
-    preset_thumbnails: Vec<Option<egui::TextureHandle>>,
-    gallery_open: bool,
+    // Presets + gallery
+    gallery: GalleryState,
 
     // Per-species particle counts (CPU-tracked; reset on respawn/apply_preset, updated on spawn)
     per_species_count: Vec<usize>,
 
     // Benchmark
-    benchmark: benchmark::BenchmarkRunner,
-    quick_bench: benchmark::QuickBench,
-    capacity_bench: benchmark::CapacityBench,
-    vsync: bool,
-    // True while auto-performance is forcing vsync off; restored to `vsync` on exit.
-    vsync_override: bool,
-    // Set when launched with --bench or --capacity-bench; triggers auto-save + exit on Done.
-    auto_bench: Option<AutoBenchKind>,
-    bench_output: Option<std::path::PathBuf>,
+    bench: BenchmarkState,
 
     // Appearance
     appearance: config::AppearanceConfig,
+    themes: Vec<config::ThemeDef>,
     os_dark: bool,
 
     // UI overlay state
@@ -149,19 +225,25 @@ struct AppState {
     appearance_open: bool,
     about_open: bool,
 
+    // Playback controls (session-only; not persisted in presets)
+    /// Multiplier applied to `dt` before each physics dispatch; 1.0 = real-time, 0.05 = 5%.
+    time_scale: f32,
+
+    // --capture mode: run the sim for capture_delay seconds, save a screenshot, then exit.
+    capture_path: Option<std::path::PathBuf>,
+    capture_elapsed: f32,
+    capture_delay: f32,
+
     // Pending one-shot actions triggered by keyboard shortcuts
     pending_screenshot: bool,
 
     // Mouse tracking
     cursor_px: PhysicalPosition<f64>,
     lmb_down: bool,
-    lmb_egui: bool, // true while LMB is held and the press was consumed by egui
+    lmb_egui: bool,
 
     // Pan drag state (LMB+Pan tool or MMB)
-    lmb_panning: bool,
-    mmb_panning: bool,
-    pan_start_px: PhysicalPosition<f64>,
-    pan_start_center: [f32; 2],
+    pan: PanState,
 
     // window MUST be last: Surface<'static> points into it; drop order matters.
     window: Arc<Window>,
@@ -261,23 +343,9 @@ impl ApplicationHandler for AppHandler {
             sim.respawn(renderer.queue());
         }
         if let Some(ref code) = self.cli.matrix.clone() {
-            match config::decode_matrix(code) {
-                Ok((n, matrix)) => {
-                    sim.species_count = n;
-                    sim.attraction = [0.0f32; 272];
-                    for i in 0..n {
-                        for j in 0..n {
-                            sim.attraction[i * crate::simulation::MAX_SPECIES + j] =
-                                matrix[i * n + j];
-                        }
-                    }
-                    sim.mark_attraction_dirty();
-                    sim.respawn(renderer.queue());
-                }
-                Err(e) => log::warn!("--matrix: {e}"),
-            }
+            Self::apply_matrix_code(&mut sim, &renderer, code);
         }
-        renderer.update_palette(&sim.palette);
+        renderer.update_palette(&sim.palette, &sim.species_visible);
         let fit_zoom = compute_fit_zoom(sim.world_width, sim.world_height, size.width, size.height);
         let per_species_count = sim.species_counts();
 
@@ -296,15 +364,25 @@ impl ApplicationHandler for AppHandler {
         let preset_thumbnails = ui::load_preset_thumbnails(&preset_library, &egui_ctx);
 
         let appearance = config::load_appearance();
+        let mut themes = config::bundled_themes();
+        // User themes in ./themes/ override bundled themes of the same name.
+        for user in config::load_themes_dir() {
+            if let Some(existing) = themes.iter_mut().find(|t| t.name == user.name) {
+                *existing = user;
+            } else {
+                themes.push(user);
+            }
+        }
         let os_dark = window
             .theme()
             .map(|t| t == winit::window::Theme::Dark)
             .unwrap_or(true);
         ui::apply_theme(
             &egui_ctx,
-            appearance.ui_theme,
+            &appearance.ui_theme,
             appearance.overlay_alpha,
             os_dark,
+            &themes,
         );
 
         self.state = Some(AppState {
@@ -316,36 +394,30 @@ impl ApplicationHandler for AppHandler {
             frame_times: VecDeque::with_capacity(120),
             camera: Camera::default_view(),
             fit_zoom,
-            preset_library,
-            selected_preset: 0,
-            preset_thumbnails,
-            gallery_open: false,
+            tool: ToolState::default(),
+            gallery: GalleryState {
+                presets: preset_library,
+                selected: 0,
+                thumbnails: preset_thumbnails,
+                open: false,
+            },
             per_species_count,
-            benchmark: benchmark::BenchmarkRunner::new(),
-            quick_bench: benchmark::QuickBench::new(),
-            capacity_bench: benchmark::CapacityBench::new(),
-            vsync: true,
-            vsync_override: false,
-            auto_bench: None,
-            bench_output: None,
+            bench: BenchmarkState::default(),
             appearance,
+            themes,
             os_dark,
             matrix_popped_out: false,
             appearance_open: false,
             about_open: false,
-            tool: ui::Tool::Pan,
-            tool_range: 0.1,
-            mouse_strength: 2.0,
-            spawn_species: None,
-            spawn_rate: 50,
-            cursor_px: PhysicalPosition::new(0.0, 0.0),
+            time_scale: 1.0,
+            capture_path: None,
+            capture_elapsed: 0.0,
+            capture_delay: 5.0,
             pending_screenshot: false,
+            cursor_px: PhysicalPosition::new(0.0, 0.0),
             lmb_down: false,
             lmb_egui: false,
-            lmb_panning: false,
-            mmb_panning: false,
-            pan_start_px: PhysicalPosition::new(0.0, 0.0),
-            pan_start_center: [0.5, 0.5],
+            pan: PanState::default(),
             window,
         });
 
@@ -355,32 +427,34 @@ impl ApplicationHandler for AppHandler {
             state.renderer.set_vsync(false);
             let sz = state.window.inner_size();
             if self.cli.bench {
-                let action = state.benchmark.start(sz.width, sz.height);
-                Self::handle_benchmark_action(
-                    &mut state.sim,
-                    &state.renderer,
-                    action,
-                    &state.benchmark,
-                );
-                state.auto_bench = Some(AutoBenchKind::Full);
-                state.bench_output = Some(
+                let action = state.bench.runner.start(sz.width, sz.height);
+                Self::handle_benchmark_action(&mut state.sim, &state.renderer, action);
+                state.bench.auto_kind = Some(AutoBenchKind::Full);
+                state.bench.output = Some(
                     self.cli
                         .bench_output
                         .clone()
                         .unwrap_or_else(|| "bench_results.csv".into()),
                 );
             } else {
-                let action = state.capacity_bench.start(sz.width, sz.height);
+                let action = state.bench.capacity.start(sz.width, sz.height);
                 state.frame_times.clear();
                 Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
-                state.auto_bench = Some(AutoBenchKind::Capacity);
-                state.bench_output = Some(
+                state.bench.auto_kind = Some(AutoBenchKind::Capacity);
+                state.bench.output = Some(
                     self.cli
                         .bench_output
                         .clone()
                         .unwrap_or_else(|| "capacity_results.csv".into()),
                 );
             }
+        }
+
+        // Capture mode: record the path/delay and let the frame loop handle the countdown.
+        if let Some(path) = self.cli.capture.clone() {
+            let state = self.state.as_mut().unwrap();
+            state.capture_path = Some(path);
+            state.capture_delay = self.cli.capture_delay;
         }
     }
 
@@ -447,21 +521,21 @@ impl ApplicationHandler for AppHandler {
 
                 // If egui grabbed the pointer this frame (e.g. resize drag started),
                 // cancel any world-panning that slipped through the press-time check.
-                if state.lmb_panning && state.egui_ctx.is_using_pointer() {
-                    state.lmb_panning = false;
+                if state.pan.lmb_panning && state.egui_ctx.is_using_pointer() {
+                    state.pan.lmb_panning = false;
                     state.lmb_egui = true;
                 }
 
-                if state.lmb_panning || state.mmb_panning {
+                if state.pan.lmb_panning || state.pan.mmb_panning {
                     let vp = window.inner_size();
                     let shader_zoom = state.camera.zoom_factor * state.fit_zoom;
                     let world_aspect = state.sim.world_aspect();
                     state.camera.center = [
-                        state.pan_start_center[0]
-                            - (position.x - state.pan_start_px.x) as f32
+                        state.pan.start_center[0]
+                            - (position.x - state.pan.start_px.x) as f32
                                 / (vp.height as f32 * world_aspect * shader_zoom),
-                        state.pan_start_center[1]
-                            + (position.y - state.pan_start_px.y) as f32
+                        state.pan.start_center[1]
+                            + (position.y - state.pan.start_px.y) as f32
                                 / (vp.height as f32 * shader_zoom),
                     ];
                     // Clamp so the world border never passes screen center.
@@ -483,33 +557,42 @@ impl ApplicationHandler for AppHandler {
                             || state.egui_ctx.is_using_pointer();
                         state.lmb_egui = egui_wants_mouse;
                         if !egui_wants_mouse {
-                            match state.tool {
+                            match state.tool.active {
                                 ui::Tool::Pan => {
-                                    state.lmb_panning = true;
-                                    state.pan_start_px = state.cursor_px;
-                                    state.pan_start_center = state.camera.center;
+                                    state.pan.lmb_panning = true;
+                                    state.pan.start_px = state.cursor_px;
+                                    state.pan.start_center = state.camera.center;
                                 }
                                 ui::Tool::ZoomIn => {
-                                    let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(
+                                    zoom_at_cursor(
+                                        &mut state.camera,
                                         state.cursor_px,
                                         window.inner_size(),
-                                        &state.camera,
                                         state.sim.world_aspect(),
-                                        sz,
+                                        state.fit_zoom,
+                                        1.5,
                                     );
-                                    apply_zoom(&mut state.camera, cw, 1.5);
                                 }
                                 ui::Tool::ZoomOut => {
-                                    let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(
+                                    zoom_at_cursor(
+                                        &mut state.camera,
+                                        state.cursor_px,
+                                        window.inner_size(),
+                                        state.sim.world_aspect(),
+                                        state.fit_zoom,
+                                        1.0 / 1.5,
+                                    );
+                                }
+                                ui::Tool::Field => {
+                                    let zoom = state.camera.zoom_factor * state.fit_zoom;
+                                    let wa = state.sim.world_aspect();
+                                    state.tool.field_drag_start = Some(screen_to_world(
                                         state.cursor_px,
                                         window.inner_size(),
                                         &state.camera,
-                                        state.sim.world_aspect(),
-                                        sz,
-                                    );
-                                    apply_zoom(&mut state.camera, cw, 1.0 / 1.5);
+                                        wa,
+                                        zoom,
+                                    ));
                                 }
                                 _ => {} // attract / repel / spawn handled each frame in RedrawRequested
                             }
@@ -518,24 +601,59 @@ impl ApplicationHandler for AppHandler {
                     (MouseButton::Left, ElementState::Released) => {
                         state.lmb_down = false;
                         state.lmb_egui = false;
-                        state.lmb_panning = false;
+                        state.pan.lmb_panning = false;
+                        // Field tool: commit placement or removal on release.
+                        if matches!(state.tool.active, ui::Tool::Field)
+                            && let Some(start) = state.tool.field_drag_start.take()
+                        {
+                            let zoom = state.camera.zoom_factor * state.fit_zoom;
+                            let wa = state.sim.world_aspect();
+                            let cur = screen_to_world(
+                                state.cursor_px,
+                                window.inner_size(),
+                                &state.camera,
+                                wa,
+                                zoom,
+                            );
+                            let dx = cur[0] - start[0];
+                            let dy = cur[1] - start[1];
+                            let drag_mag = (dx * dx + dy * dy).sqrt();
+                            let threshold = state.tool.range.max(0.04);
+                            if !state.sim.remove_nearest_attractor(start, threshold) {
+                                let velocity = if drag_mag >= 0.005 {
+                                    [dx * 0.5, dy * 0.5]
+                                } else {
+                                    [0.0f32, 0.0]
+                                };
+                                let mut strength = [0.0f32; MAX_SPECIES];
+                                let n = state.sim.species_count;
+                                strength[..n]
+                                    .copy_from_slice(&state.tool.field_species_strength[..n]);
+                                state.sim.add_attractor(AttractorDef {
+                                    pos: start,
+                                    range: state.tool.range,
+                                    strength,
+                                    velocity,
+                                });
+                            }
+                        }
                         // If MMB is still panning, re-anchor so the transition is smooth.
-                        if state.mmb_panning {
-                            state.pan_start_px = state.cursor_px;
-                            state.pan_start_center = state.camera.center;
+                        if state.pan.mmb_panning {
+                            state.pan.start_px = state.cursor_px;
+                            state.pan.start_center = state.camera.center;
                         }
                     }
                     // Middle mouse always pans, regardless of selected tool or egui focus.
                     (MouseButton::Middle, ElementState::Pressed) => {
-                        state.mmb_panning = true;
-                        state.pan_start_px = state.cursor_px;
-                        state.pan_start_center = state.camera.center;
+                        state.pan.mmb_panning = true;
+                        state.pan.start_px = state.cursor_px;
+                        state.pan.start_center = state.camera.center;
                     }
                     (MouseButton::Middle, ElementState::Released) => {
-                        state.mmb_panning = false;
-                        if state.lmb_panning {
-                            state.pan_start_px = state.cursor_px;
-                            state.pan_start_center = state.camera.center;
+                        state.pan.mmb_panning = false;
+                        if state.pan.lmb_panning {
+                            state.pan.start_px = state.cursor_px;
+                            state.pan.start_center = state.camera.center;
                         }
                     }
                     _ => {}
@@ -550,16 +668,14 @@ impl ApplicationHandler for AppHandler {
                         MouseScrollDelta::PixelDelta(pos) => pos.y as f32 * 0.02,
                     };
                     if lines.abs() > 0.001 {
-                        let factor = 1.15_f32.powf(lines);
-                        let sz = state.camera.zoom_factor * state.fit_zoom;
-                        let cw = screen_to_world(
+                        zoom_at_cursor(
+                            &mut state.camera,
                             state.cursor_px,
                             window.inner_size(),
-                            &state.camera,
                             state.sim.world_aspect(),
-                            sz,
+                            state.fit_zoom,
+                            1.15_f32.powf(lines),
                         );
-                        apply_zoom(&mut state.camera, cw, factor);
                     }
                 }
             }
@@ -590,7 +706,11 @@ impl ApplicationHandler for AppHandler {
                             state.camera.center[0] = (state.camera.center[0] - step).max(0.0);
                         }
                         Key::Named(NamedKey::ArrowRight) => {
-                            state.camera.center[0] = (state.camera.center[0] + step).min(1.0);
+                            if state.sim.paused {
+                                state.sim.step_requested = true;
+                            } else {
+                                state.camera.center[0] = (state.camera.center[0] + step).min(1.0);
+                            }
                         }
                         Key::Named(NamedKey::ArrowUp) => {
                             state.camera.center[1] = (state.camera.center[1] + step).min(1.0);
@@ -609,26 +729,24 @@ impl ApplicationHandler for AppHandler {
                             );
                             match c.as_str() {
                                 "=" | "+" => {
-                                    let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(
+                                    zoom_at_cursor(
+                                        &mut state.camera,
                                         mid,
                                         vp,
-                                        &state.camera,
                                         state.sim.world_aspect(),
-                                        sz,
+                                        state.fit_zoom,
+                                        1.5,
                                     );
-                                    apply_zoom(&mut state.camera, cw, 1.5);
                                 }
                                 "-" => {
-                                    let sz = state.camera.zoom_factor * state.fit_zoom;
-                                    let cw = screen_to_world(
+                                    zoom_at_cursor(
+                                        &mut state.camera,
                                         mid,
                                         vp,
-                                        &state.camera,
                                         state.sim.world_aspect(),
-                                        sz,
+                                        state.fit_zoom,
+                                        1.0 / 1.5,
                                     );
-                                    apply_zoom(&mut state.camera, cw, 1.0 / 1.5);
                                 }
                                 "0" => state.camera = Camera::default_view(),
                                 "r" => {
@@ -648,56 +766,19 @@ impl ApplicationHandler for AppHandler {
                 state.os_dark = t == winit::window::Theme::Dark;
                 ui::apply_theme(
                     &state.egui_ctx,
-                    state.appearance.ui_theme,
+                    &state.appearance.ui_theme,
                     state.appearance.overlay_alpha,
                     state.os_dark,
+                    &state.themes,
                 );
             }
 
             WindowEvent::RedrawRequested => {
-                let raw_dt = state.last_frame.elapsed().as_secs_f32();
-                state.last_frame = Instant::now();
-                // Physics cap: prevents particles jumping during pauses/focus loss.
-                // Use raw_dt for all fps measurements so heavy frames aren't clamped to 20fps.
-                let dt = raw_dt.min(0.05);
-
-                state.frame_times.push_back(raw_dt);
-                if state.frame_times.len() > 120 {
-                    state.frame_times.pop_front();
-                }
-
-                // Auto-performance: adjust world size toward perf_target_fps.
-                let perf_active =
-                    state.sim.auto_density && state.sim.perf_auto && !state.benchmark.is_running();
-                if perf_active {
-                    let n = state.frame_times.len();
-                    let avg_fps = if n > 0 {
-                        n as f32 / state.frame_times.iter().sum::<f32>()
-                    } else {
-                        0.0
-                    };
-                    state.sim.perf_world_adjust(avg_fps, raw_dt);
-                    // Pin world_width to viewport aspect after every adjustment to
-                    // prevent float drift and ensure fit_zoom stays accurate.
-                    let vp = window.inner_size();
-                    let vp_aspect = vp.width as f32 / vp.height as f32;
-                    state.sim.world_width = state.sim.world_height * vp_aspect;
-                    state.fit_zoom = compute_fit_zoom(
-                        state.sim.world_width,
-                        state.sim.world_height,
-                        vp.width,
-                        vp.height,
-                    );
-                }
-
-                // Auto-performance forces vsync off so the FPS controller sees real GPU load.
-                // Restore the user's preference when the mode is deactivated.
-                if perf_active != state.vsync_override {
-                    state.vsync_override = perf_active;
-                    if !state.benchmark.is_running() {
-                        state.renderer.set_vsync(state.vsync && !perf_active);
-                    }
-                }
+                let (raw_dt, dt) = state.tick_frame();
+                let perf_active = state.sim.auto_density
+                    && state.sim.perf_auto
+                    && !state.bench.runner.is_running();
+                state.tick_perf_auto(perf_active, raw_dt, window.inner_size());
 
                 // --- Build egui ---
                 let raw_input = state.egui_state.take_egui_input(&window);
@@ -709,50 +790,46 @@ impl ApplicationHandler for AppHandler {
                 let world_aspect = state.sim.world_aspect();
 
                 let bench_running =
-                    state.benchmark.is_running() || state.capacity_bench.is_running();
+                    state.bench.runner.is_running() || state.bench.capacity.is_running();
 
                 let (full_output, ui_resp, bench_resp, should_reset_view, take_screenshot) = {
                     let egui_ctx = &state.egui_ctx;
                     let sim = &mut state.sim;
                     let frame_times = &state.frame_times;
-                    let tool = &mut state.tool;
-                    let tool_range = &mut state.tool_range;
-                    let mouse_strength = &mut state.mouse_strength;
-                    let spawn_species = &mut state.spawn_species;
-                    let spawn_rate = &mut state.spawn_rate;
+                    let tool = &mut state.tool.active;
+                    let tool_range = &mut state.tool.range;
+                    let mouse_strength = &mut state.tool.strength;
+                    let spawn_species = &mut state.tool.spawn_species;
+                    let spawn_rate = &mut state.tool.spawn_rate;
+                    let field_drag_start = state.tool.field_drag_start;
+                    let field_default_strength = &mut state.tool.field_default_strength;
+                    let field_species_strength = state.tool.field_species_strength.as_mut_slice();
                     let n_species = sim.species_count;
                     let border_mode = sim.border_mode;
-                    let preset_library = &state.preset_library;
-                    let selected_preset = &mut state.selected_preset;
-                    let benchmark = &mut state.benchmark;
-                    let quick_bench = &state.quick_bench;
-                    let capacity_bench = &mut state.capacity_bench;
-                    let vsync = state.vsync;
-                    let vsync_managed = state.vsync_override;
+                    let preset_library = &state.gallery.presets;
+                    let selected_preset = &mut state.gallery.selected;
+                    let benchmark = &mut state.bench.runner;
+                    let quick_bench = &state.bench.quick;
+                    let capacity_bench = &mut state.bench.capacity;
+                    let vsync = state.bench.vsync;
+                    let vsync_managed = state.bench.vsync_override;
                     let vsync_available = state.renderer.vsync_toggle_available();
-                    let preset_thumbnails = &state.preset_thumbnails;
-                    let gallery_open = &mut state.gallery_open;
+                    let preset_thumbnails = &state.gallery.thumbnails;
+                    let gallery_open = &mut state.gallery.open;
                     let appearance_open = &mut state.appearance_open;
                     let about_open = &mut state.about_open;
                     let matrix_popped_out = &mut state.matrix_popped_out;
                     let per_species_count = &state.per_species_count;
                     let appearance = &mut state.appearance;
+                    let themes = &state.themes;
+                    let time_scale = &mut state.time_scale;
                     let os_dark = state.os_dark;
                     let mut ui_r = ui::UiResponse::default();
-                    let mut bench_r = ui::BenchmarkPanelResponse {
-                        start: false,
-                        export_csv: false,
-                        start_quick: false,
-                        start_capacity: false,
-                        export_capacity_csv: false,
-                        cancel: false,
-                        cancel_capacity: false,
-                        vsync: None,
-                    };
+                    let mut bench_r = ui::BenchmarkPanelResponse::default();
                     let mut reset_view = false;
                     let mut take_screenshot = false;
                     let out = egui_ctx.run(raw_input, |ctx| {
-                        ui_r = ui::draw_ui(ctx, sim, bench_running, matrix_popped_out);
+                        ui_r = ui::draw_ui(ctx, sim, bench_running, matrix_popped_out, time_scale);
                         if *matrix_popped_out && ui::draw_matrix_window(ctx, sim, matrix_popped_out)
                         {
                             ui_r.randomize = true;
@@ -763,6 +840,7 @@ impl ApplicationHandler for AppHandler {
                             appearance,
                             os_dark,
                             appearance_open,
+                            themes,
                         );
                         ui_r.palette_changed |= appearance_resp.palette_changed;
                         ui_r.randomize_palette |= appearance_resp.randomize_palette;
@@ -821,6 +899,10 @@ impl ApplicationHandler for AppHandler {
                             spawn_rate,
                             n_species,
                             &sim.palette,
+                            field_default_strength,
+                            field_species_strength,
+                            sim.attractors.len(),
+                            &mut ui_r.clear_attractors,
                         );
                         ui::draw_world_border(
                             ctx,
@@ -830,370 +912,53 @@ impl ApplicationHandler for AppHandler {
                             border_mode,
                         );
                         ui::draw_cursor_indicator(ctx, *tool, *tool_range, shader_zoom);
+                        let [br, bg, bb] = appearance.bg_color;
+                        let bg_lum =
+                            (0.299 * br as f32 + 0.587 * bg as f32 + 0.114 * bb as f32) / 255.0;
+                        ui::draw_field_overlay(
+                            ctx,
+                            &sim.attractors,
+                            cam_center,
+                            world_aspect,
+                            shader_zoom,
+                            *tool,
+                            ctx.input(|i| i.pointer.hover_pos()).map(|p| {
+                                let r = ctx.screen_rect();
+                                [
+                                    (p.x - r.center().x)
+                                        / (world_aspect * shader_zoom * r.height())
+                                        + cam_center[0],
+                                    cam_center[1]
+                                        - (p.y - r.center().y) / (shader_zoom * r.height()),
+                                ]
+                            }),
+                            n_species,
+                            field_drag_start,
+                            *tool_range,
+                            bg_lum,
+                        );
                     });
                     (out, ui_r, bench_r, reset_view, take_screenshot)
                 };
 
-                if ui_resp.toggle_gallery {
-                    state.gallery_open = !state.gallery_open;
+                state.handle_ui_responses(
+                    ui_resp,
+                    &window,
+                    cam_center,
+                    shader_zoom,
+                    should_reset_view,
+                    take_screenshot,
+                );
+                if state.handle_benchmark_responses(bench_resp, &window, raw_dt) {
+                    event_loop.exit();
+                    return;
                 }
-                if ui_resp.matrix_pop_out_toggled {
-                    state.matrix_popped_out = !state.matrix_popped_out;
-                }
-                if ui_resp.respawn {
-                    // In auto-density mode, resize the world before spawning so density stays
-                    // constant at the new particle count.
-                    if state.sim.auto_density {
-                        state.sim.auto_world_size();
-                        state.fit_zoom = compute_fit_zoom(
-                            state.sim.world_width,
-                            state.sim.world_height,
-                            window.inner_size().width,
-                            window.inner_size().height,
-                        );
-                    }
-                    state.sim.respawn(state.renderer.queue());
-                    state.frame_times.clear();
-                    state.per_species_count = state.sim.species_counts();
-                }
-                if ui_resp.randomize {
-                    state.sim.randomize_attraction();
-                }
-                if ui_resp.randomize_palette {
-                    state.sim.randomize_palette();
-                }
-                if ui_resp.palette_changed || ui_resp.randomize_palette {
-                    state.renderer.update_palette(&state.sim.palette);
-                }
-                if should_reset_view {
-                    state.camera = Camera::default_view();
-                }
-                let take_screenshot =
-                    take_screenshot || std::mem::take(&mut state.pending_screenshot);
-                if take_screenshot {
-                    let dir = std::path::Path::new(config::SCREENSHOTS_DIR);
-                    let _ = std::fs::create_dir_all(dir);
-                    let secs = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_secs();
-                    let path = dir.join(format!("screenshot_{secs}.png"));
-                    let png = state.renderer.capture_png(
-                        &state.sim,
-                        cam_center,
-                        shader_zoom,
-                        renderer::bg_color_from_srgb(state.appearance.bg_color),
-                    );
-                    if let Err(e) = std::fs::write(&path, &png) {
-                        log::warn!("Screenshot failed: {e}");
-                    }
-                }
-                if ui_resp.match_win {
-                    let sz = window.inner_size();
-                    state.sim.world_width = sz.width as f32;
-                    state.sim.world_height = sz.height as f32;
-                    state.sim.auto_density = false; // manual override disables auto-density
-                    state.fit_zoom = compute_fit_zoom(
-                        state.sim.world_width,
-                        state.sim.world_height,
-                        sz.width,
-                        sz.height,
-                    );
-                }
-                if ui_resp.apply_preset
-                    && let Some(preset) = state.preset_library.get(state.selected_preset).cloned()
-                {
-                    // Capture preset density before apply_preset overwrites the sim state.
-                    let preset_density =
-                        preset.particle_count as f32 / (preset.world_width * preset.world_height);
-
-                    state.sim.apply_preset(state.renderer.queue(), &preset);
-
-                    // Scale world to current window while preserving preset particle density.
-                    // If density × window_area would exceed MAX_PARTICLES, shrink the world
-                    // so the cap is respected while still matching the window aspect ratio.
-                    let sz = window.inner_size();
-                    let aspect = sz.width as f32 / sz.height as f32;
-                    let window_area = sz.width as f32 * sz.height as f32;
-                    let max_area =
-                        crate::simulation::MAX_PARTICLES as f32 / preset_density.max(1e-10);
-                    let target_area = window_area.min(max_area);
-                    let world_h = (target_area / aspect).sqrt();
-                    state.sim.world_height = world_h;
-                    state.sim.world_width = world_h * aspect;
-                    state.sim.particle_count =
-                        ((preset_density * state.sim.world_width * state.sim.world_height)
-                            as usize)
-                            .clamp(100, crate::simulation::MAX_PARTICLES);
-                    state.sim.respawn(state.renderer.queue());
-                    state.frame_times.clear();
-
-                    state.fit_zoom = compute_fit_zoom(
-                        state.sim.world_width,
-                        state.sim.world_height,
-                        sz.width,
-                        sz.height,
-                    );
-                    state.camera = Camera::default_view();
-                    state.per_species_count = state.sim.species_counts();
-                    state.renderer.update_palette(&state.sim.palette);
-                }
-                if ui_resp.import_preset
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("TOML preset", &["toml"])
-                        .pick_file()
-                {
-                    match config::load_preset_file(&path) {
-                        Ok(mut preset) => {
-                            if (preset.name == "exported" || preset.name.is_empty())
-                                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                            {
-                                preset.name = stem.to_string();
-                            }
-                            let thumb = ui::load_preset_thumbnail(&preset.name, &state.egui_ctx);
-                            state.preset_library.push(preset);
-                            state.preset_thumbnails.push(thumb);
-                            state.selected_preset = state.preset_library.len() - 1;
-                        }
-                        Err(e) => log::warn!("Import failed: {e}"),
-                    }
-                }
-                if ui_resp.export_preset
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("TOML preset", &["toml"])
-                        .set_file_name("preset.toml")
-                        .save_file()
-                {
-                    let name = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("exported");
-                    if let Err(e) = config::save_preset_file(&state.sim.to_preset(name), &path) {
-                        log::warn!("Export failed: {e}");
-                    } else {
-                        let png = state.renderer.capture_png(
-                            &state.sim,
-                            cam_center,
-                            shader_zoom,
-                            renderer::bg_color_from_srgb(state.appearance.bg_color),
-                        );
-                        let thumb_path = path.with_extension("png");
-                        if let Err(e) = std::fs::write(&thumb_path, &png) {
-                            log::warn!("Thumbnail save failed: {e}");
-                        }
-                    }
-                }
-
-                if ui_resp.paste_share_code
-                    && let Some(text) = state.egui_state.clipboard_text()
-                {
-                    state.egui_ctx.data_mut(|d| {
-                        d.insert_temp(egui::Id::new("share_code_paste_buf"), text);
-                    });
-                }
-                if let Some(code) = ui_resp.apply_share_code {
-                    match config::decode_matrix(&code) {
-                        Ok((n, matrix)) => {
-                            state.sim.species_count = n;
-                            state.sim.attraction = [0.0f32; 272];
-                            for i in 0..n {
-                                for j in 0..n {
-                                    state.sim.attraction[i * crate::simulation::MAX_SPECIES + j] =
-                                        matrix[i * n + j];
-                                }
-                            }
-                            state.sim.mark_attraction_dirty();
-                            state.sim.respawn(state.renderer.queue());
-                            state.frame_times.clear();
-                            state.per_species_count = state.sim.species_counts();
-                            state.renderer.update_palette(&state.sim.palette);
-                        }
-                        Err(e) => log::warn!("Share code apply failed: {e}"),
-                    }
-                }
-
-                if ui_resp.appearance_changed {
-                    ui::apply_theme(
-                        &state.egui_ctx,
-                        state.appearance.ui_theme,
-                        state.appearance.overlay_alpha,
-                        state.os_dark,
-                    );
-                    config::save_appearance(&state.appearance);
-                }
-
-                // Global vsync toggle
-                if let Some(new_vsync) = bench_resp.vsync {
-                    state.vsync = new_vsync;
-                    if !state.benchmark.is_running() {
-                        state.renderer.set_vsync(new_vsync);
-                    }
-                }
-
-                // Benchmark
-                if bench_resp.start {
-                    let sz = window.inner_size();
-                    if state.benchmark.vsync_off {
-                        state.renderer.set_vsync(false);
-                    }
-                    let action = state.benchmark.start(sz.width, sz.height);
-                    Self::handle_benchmark_action(
-                        &mut state.sim,
-                        &state.renderer,
-                        action,
-                        &state.benchmark,
-                    );
-                }
-                if bench_resp.export_csv
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("CSV", &["csv"])
-                        .set_file_name("benchmark.csv")
-                        .save_file()
-                    && let Err(e) = state.benchmark.write_csv(&path)
-                {
-                    log::warn!("Benchmark CSV export failed: {e}");
-                }
-                if state.benchmark.is_running() {
-                    let action = state.benchmark.advance(raw_dt);
-                    if matches!(action, benchmark::BenchmarkAction::Done) {
-                        state.renderer.set_vsync(state.vsync);
-                        if state.auto_bench == Some(AutoBenchKind::Full) {
-                            let path = state
-                                .bench_output
-                                .take()
-                                .unwrap_or_else(|| "bench_results.csv".into());
-                            match state.benchmark.write_csv(&path) {
-                                Ok(()) => {
-                                    println!("Benchmark results written to {}", path.display())
-                                }
-                                Err(e) => log::error!("Benchmark CSV write failed: {e}"),
-                            }
-                            event_loop.exit();
-                            return;
-                        }
-                    }
-                    Self::handle_benchmark_action(
-                        &mut state.sim,
-                        &state.renderer,
-                        action,
-                        &state.benchmark,
-                    );
-                }
-
-                // Quick bench
-                if bench_resp.start_quick {
-                    state.quick_bench.start(state.sim.particle_count_gpu());
-                }
-                if state.quick_bench.is_running() {
-                    state
-                        .quick_bench
-                        .advance(raw_dt, state.sim.particle_count_gpu());
-                }
-
-                // Capacity benchmark
-                if bench_resp.start_capacity {
-                    let sz = window.inner_size();
-                    state.renderer.set_vsync(false);
-                    let action = state.capacity_bench.start(sz.width, sz.height);
-                    state.frame_times.clear();
-                    Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
-                }
-                if bench_resp.export_capacity_csv
-                    && let Some(path) = rfd::FileDialog::new()
-                        .add_filter("CSV", &["csv"])
-                        .set_file_name("capacity.csv")
-                        .save_file()
-                    && let Err(e) = state.capacity_bench.write_csv(&path)
-                {
-                    log::warn!("Capacity CSV export failed: {e}");
-                }
-                if state.capacity_bench.is_running() {
-                    let action = state.capacity_bench.advance(raw_dt);
-                    if matches!(action, benchmark::CapacityAction::Done) {
-                        state.renderer.set_vsync(state.vsync);
-                        if state.auto_bench == Some(AutoBenchKind::Capacity) {
-                            let path = state
-                                .bench_output
-                                .take()
-                                .unwrap_or_else(|| "capacity_results.csv".into());
-                            match state.capacity_bench.write_csv(&path) {
-                                Ok(()) => {
-                                    println!("Capacity results written to {}", path.display())
-                                }
-                                Err(e) => log::error!("Capacity benchmark CSV write failed: {e}"),
-                            }
-                            event_loop.exit();
-                            return;
-                        }
-                    }
-                    if matches!(action, benchmark::CapacityAction::LoadPreset { .. }) {
-                        state.frame_times.clear();
-                    }
-                    Self::handle_capacity_action(&mut state.sim, &state.renderer, action);
-                }
-
-                // Cancel benchmark runs
-                if bench_resp.cancel {
-                    state.benchmark.cancel();
-                    state.renderer.set_vsync(state.vsync);
-                }
-                if bench_resp.cancel_capacity {
-                    state.capacity_bench.cancel();
-                    state.renderer.set_vsync(state.vsync);
-                }
-
-                // Apply active tool effects to sim mouse state before dispatch.
-                let vp = window.inner_size();
-                let world = screen_to_world(
-                    state.cursor_px,
-                    vp,
-                    &state.camera,
+                state.handle_tool_effects(
+                    window.inner_size(),
                     world_aspect,
                     shader_zoom,
+                    bench_running,
                 );
-                state.sim.mouse_x = world[0];
-                state.sim.mouse_y = world[1];
-                state.sim.mouse_range = state.tool_range;
-                let sim_lmb = state.lmb_down && !state.lmb_egui && !bench_running;
-                state.sim.mouse_strength = match state.tool {
-                    ui::Tool::Attract if sim_lmb => state.mouse_strength,
-                    ui::Tool::Repel if sim_lmb => -state.mouse_strength,
-                    _ => 0.0,
-                };
-                if matches!(state.tool, ui::Tool::Spawn) && sim_lmb {
-                    let queue = state.renderer.queue();
-                    let spawn_species = state.spawn_species;
-                    let spawn_rate = state.spawn_rate;
-                    let before = state.sim.particle_count_gpu();
-                    state.sim.spawn_particles(
-                        queue,
-                        world,
-                        state.tool_range,
-                        spawn_species,
-                        world_aspect,
-                        spawn_rate,
-                    );
-                    let spawned = (state.sim.particle_count_gpu() - before) as usize;
-                    if spawned > 0 {
-                        let n = state.sim.species_count;
-                        match spawn_species {
-                            Some(s) if s < state.per_species_count.len() => {
-                                state.per_species_count[s] += spawned;
-                            }
-                            _ => {
-                                // Random species: distribute evenly
-                                let per = spawned / n;
-                                let rem = spawned % n;
-                                for c in state.per_species_count.iter_mut() {
-                                    *c += per;
-                                }
-                                for c in state.per_species_count.iter_mut().take(rem) {
-                                    *c += 1;
-                                }
-                            }
-                        }
-                    }
-                }
 
                 let egui::FullOutput {
                     platform_output,
@@ -1216,22 +981,33 @@ impl ApplicationHandler for AppHandler {
                 // emitting Default frame-over-frame, handle_platform_output skips
                 // window.set_cursor(), leaving the tool cursor from the previous frame stuck.
                 if egui_cursor == egui::CursorIcon::Default {
-                    let panning = state.lmb_panning || state.mmb_panning;
+                    let panning = state.pan.lmb_panning || state.pan.mmb_panning;
                     let cursor = if state.egui_ctx.is_pointer_over_area() {
                         CursorIcon::Default
                     } else {
-                        tool_cursor(state.tool, panning)
+                        tool_cursor(state.tool.active, panning)
                     };
                     window.set_cursor(cursor);
                 }
                 let paint_jobs = state.egui_ctx.tessellate(shapes, pixels_per_point);
 
+                // Frame stepping: temporarily unpause for exactly one dispatch.
+                let stepping = state.sim.paused && state.sim.step_requested;
+                if stepping {
+                    state.sim.paused = false;
+                    state.sim.step_requested = false;
+                }
+
+                let physics_dt = dt * state.time_scale;
+                if !state.sim.paused {
+                    state.sim.tick_attractors(physics_dt);
+                }
                 match state.renderer.render(
                     &paint_jobs,
                     &textures_delta,
                     pixels_per_point,
                     &state.sim,
-                    dt,
+                    physics_dt,
                     cam_center,
                     shader_zoom,
                     renderer::bg_color_from_srgb(state.appearance.bg_color),
@@ -1243,6 +1019,29 @@ impl ApplicationHandler for AppHandler {
                     Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
                     Err(wgpu::SurfaceError::Timeout) => log::warn!("Surface timeout"),
                     Err(e) => log::error!("Surface error: {e:?}"),
+                }
+
+                if stepping {
+                    state.sim.paused = true;
+                }
+
+                // Capture mode: count down and take screenshot when delay expires.
+                if state.capture_path.is_some() {
+                    state.capture_elapsed += raw_dt;
+                    if state.capture_elapsed >= state.capture_delay {
+                        let path = state.capture_path.take().unwrap();
+                        let png = state.renderer.capture_png(
+                            &state.sim,
+                            cam_center,
+                            shader_zoom,
+                            renderer::bg_color_from_srgb(state.appearance.bg_color),
+                        );
+                        match std::fs::write(&path, &png) {
+                            Ok(()) => println!("Captured screenshot to {}", path.display()),
+                            Err(e) => log::error!("Capture failed: {e}"),
+                        }
+                        event_loop.exit();
+                    }
                 }
             }
 
@@ -1270,7 +1069,419 @@ fn tool_cursor(tool: ui::Tool, panning: bool) -> CursorIcon {
         }
         ui::Tool::ZoomIn => CursorIcon::ZoomIn,
         ui::Tool::ZoomOut => CursorIcon::ZoomOut,
-        ui::Tool::Attract | ui::Tool::Repel | ui::Tool::Spawn => CursorIcon::Crosshair,
+        ui::Tool::Attract | ui::Tool::Repel | ui::Tool::Spawn | ui::Tool::Field => {
+            CursorIcon::Crosshair
+        }
+    }
+}
+
+// ── AppState helpers ──────────────────────────────────────────────────────────
+
+impl AppState {
+    /// Sample the current frame time, update the rolling history, and return `(raw_dt, dt)`.
+    ///
+    /// `dt` is physics-capped at 50 ms to prevent particles from tunnelling after focus loss.
+    fn tick_frame(&mut self) -> (f32, f32) {
+        let raw_dt = self.last_frame.elapsed().as_secs_f32();
+        self.last_frame = std::time::Instant::now();
+        self.frame_times.push_back(raw_dt);
+        if self.frame_times.len() > 120 {
+            self.frame_times.pop_front();
+        }
+        (raw_dt, raw_dt.min(0.05))
+    }
+
+    /// Tick the auto-performance world-size controller and vsync override.
+    ///
+    /// Must be called after `tick_frame` so `frame_times` is up-to-date.
+    fn tick_perf_auto(
+        &mut self,
+        perf_active: bool,
+        raw_dt: f32,
+        viewport: winit::dpi::PhysicalSize<u32>,
+    ) {
+        if perf_active {
+            let n = self.frame_times.len();
+            let avg_fps = if n > 0 {
+                n as f32 / self.frame_times.iter().sum::<f32>()
+            } else {
+                0.0
+            };
+            self.sim.perf_world_adjust(avg_fps, raw_dt);
+            let vp_aspect = viewport.width as f32 / viewport.height as f32;
+            self.sim.world_width = self.sim.world_height * vp_aspect;
+            self.fit_zoom = compute_fit_zoom(
+                self.sim.world_width,
+                self.sim.world_height,
+                viewport.width,
+                viewport.height,
+            );
+        }
+        // Auto-performance forces vsync off so the FPS controller sees real GPU load.
+        if perf_active != self.bench.vsync_override {
+            self.bench.vsync_override = perf_active;
+            if !self.bench.runner.is_running() {
+                self.renderer.set_vsync(self.bench.vsync && !perf_active);
+            }
+        }
+    }
+
+    /// Apply all `UiResponse` side-effects (respawn, presets, screenshots, appearance, …).
+    ///
+    /// `cam_center` and `shader_zoom` are used for screenshot/export-preset capture;
+    /// they must be computed before the egui frame so they reflect the camera at render time.
+    fn handle_ui_responses(
+        &mut self,
+        resp: ui::UiResponse,
+        window: &Window,
+        cam_center: [f32; 2],
+        shader_zoom: f32,
+        should_reset_view: bool,
+        take_screenshot_from_toolbar: bool,
+    ) {
+        if resp.clear_attractors {
+            self.sim.clear_attractors();
+        }
+        if resp.toggle_gallery {
+            self.gallery.open = !self.gallery.open;
+        }
+        if resp.matrix_pop_out_toggled {
+            self.matrix_popped_out = !self.matrix_popped_out;
+        }
+        if resp.respawn {
+            if self.sim.auto_density {
+                self.sim.auto_world_size();
+                self.fit_zoom = compute_fit_zoom(
+                    self.sim.world_width,
+                    self.sim.world_height,
+                    window.inner_size().width,
+                    window.inner_size().height,
+                );
+            }
+            self.sim.respawn(self.renderer.queue());
+            self.frame_times.clear();
+            self.per_species_count = self.sim.species_counts();
+        }
+        if resp.randomize {
+            self.sim.randomize_attraction();
+        }
+        if resp.randomize_palette {
+            self.sim.randomize_palette();
+        }
+        if resp.palette_changed || resp.randomize_palette {
+            self.renderer
+                .update_palette(&self.sim.palette, &self.sim.species_visible);
+        }
+        if should_reset_view {
+            self.camera = Camera::default_view();
+        }
+        let take_screenshot =
+            take_screenshot_from_toolbar || std::mem::take(&mut self.pending_screenshot);
+        if take_screenshot {
+            let dir = std::path::Path::new(config::SCREENSHOTS_DIR);
+            let _ = std::fs::create_dir_all(dir);
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let path = dir.join(format!("screenshot_{secs}.png"));
+            let png = self.renderer.capture_png(
+                &self.sim,
+                cam_center,
+                shader_zoom,
+                renderer::bg_color_from_srgb(self.appearance.bg_color),
+            );
+            if let Err(e) = std::fs::write(&path, &png) {
+                log::warn!("Screenshot failed: {e}");
+            }
+        }
+        if resp.match_win {
+            let sz = window.inner_size();
+            self.sim.world_width = sz.width as f32;
+            self.sim.world_height = sz.height as f32;
+            self.sim.auto_density = false;
+            self.fit_zoom = compute_fit_zoom(
+                self.sim.world_width,
+                self.sim.world_height,
+                sz.width,
+                sz.height,
+            );
+        }
+        if resp.apply_preset
+            && let Some(preset) = self.gallery.presets.get(self.gallery.selected).cloned()
+        {
+            let preset_density =
+                preset.particle_count as f32 / (preset.world_width * preset.world_height);
+            self.sim.apply_preset(self.renderer.queue(), &preset);
+            let sz = window.inner_size();
+            let aspect = sz.width as f32 / sz.height as f32;
+            let window_area = sz.width as f32 * sz.height as f32;
+            let max_area = crate::simulation::MAX_PARTICLES as f32 / preset_density.max(1e-10);
+            let target_area = window_area.min(max_area);
+            let world_h = (target_area / aspect).sqrt();
+            self.sim.world_height = world_h;
+            self.sim.world_width = world_h * aspect;
+            self.sim.particle_count =
+                ((preset_density * self.sim.world_width * self.sim.world_height) as usize)
+                    .clamp(100, crate::simulation::MAX_PARTICLES);
+            self.sim.respawn(self.renderer.queue());
+            self.frame_times.clear();
+            self.fit_zoom = compute_fit_zoom(
+                self.sim.world_width,
+                self.sim.world_height,
+                sz.width,
+                sz.height,
+            );
+            self.camera = Camera::default_view();
+            self.per_species_count = self.sim.species_counts();
+            self.renderer
+                .update_palette(&self.sim.palette, &self.sim.species_visible);
+        }
+        if resp.import_preset
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("TOML preset", &["toml"])
+                .pick_file()
+        {
+            match config::load_preset_file(&path) {
+                Ok(mut preset) => {
+                    if (preset.name == "exported" || preset.name.is_empty())
+                        && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                    {
+                        preset.name = stem.to_string();
+                    }
+                    let thumb = ui::load_preset_thumbnail(&preset.name, &self.egui_ctx);
+                    self.gallery.presets.push(preset);
+                    self.gallery.thumbnails.push(thumb);
+                    self.gallery.selected = self.gallery.presets.len() - 1;
+                }
+                Err(e) => log::warn!("Import failed: {e}"),
+            }
+        }
+        if resp.export_preset
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("TOML preset", &["toml"])
+                .set_file_name("preset.toml")
+                .save_file()
+        {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("exported");
+            if let Err(e) = config::save_preset_file(&self.sim.to_preset(name), &path) {
+                log::warn!("Export failed: {e}");
+            } else {
+                let png = self.renderer.capture_png(
+                    &self.sim,
+                    cam_center,
+                    shader_zoom,
+                    renderer::bg_color_from_srgb(self.appearance.bg_color),
+                );
+                let thumb_path = path.with_extension("png");
+                if let Err(e) = std::fs::write(&thumb_path, &png) {
+                    log::warn!("Thumbnail save failed: {e}");
+                }
+            }
+        }
+        if resp.paste_share_code
+            && let Some(text) = self.egui_state.clipboard_text()
+        {
+            self.egui_ctx.data_mut(|d| {
+                d.insert_temp(egui::Id::new("share_code_paste_buf"), text);
+            });
+        }
+        if let Some(code) = resp.apply_share_code
+            && AppHandler::apply_matrix_code(&mut self.sim, &self.renderer, code.as_str())
+        {
+            self.frame_times.clear();
+            self.per_species_count = self.sim.species_counts();
+            self.renderer
+                .update_palette(&self.sim.palette, &self.sim.species_visible);
+        }
+        if resp.appearance_changed {
+            ui::apply_theme(
+                &self.egui_ctx,
+                &self.appearance.ui_theme,
+                self.appearance.overlay_alpha,
+                self.os_dark,
+                &self.themes,
+            );
+            config::save_appearance(&self.appearance);
+        }
+    }
+
+    /// Tick benchmark state machines and handle bench panel responses.
+    ///
+    /// Returns `true` if the auto-bench run has completed and the app should exit.
+    fn handle_benchmark_responses(
+        &mut self,
+        resp: ui::BenchmarkPanelResponse,
+        window: &Window,
+        raw_dt: f32,
+    ) -> bool {
+        if let Some(new_vsync) = resp.vsync {
+            self.bench.vsync = new_vsync;
+            if !self.bench.runner.is_running() {
+                self.renderer.set_vsync(new_vsync);
+            }
+        }
+
+        if resp.start || resp.start_quick || resp.start_capacity {
+            self.sim.clear_attractors();
+        }
+        if resp.start {
+            let sz = window.inner_size();
+            if self.bench.runner.vsync_off {
+                self.renderer.set_vsync(false);
+            }
+            let action = self.bench.runner.start(sz.width, sz.height);
+            AppHandler::handle_benchmark_action(&mut self.sim, &self.renderer, action);
+        }
+        if resp.export_csv
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("CSV", &["csv"])
+                .set_file_name("benchmark.csv")
+                .save_file()
+            && let Err(e) = self.bench.runner.write_csv(&path)
+        {
+            log::warn!("Benchmark CSV export failed: {e}");
+        }
+        if self.bench.runner.is_running() {
+            let action = self.bench.runner.advance(raw_dt);
+            if matches!(action, benchmark::BenchmarkAction::Done) {
+                self.renderer.set_vsync(self.bench.vsync);
+                if self.bench.auto_kind == Some(AutoBenchKind::Full) {
+                    let path = self
+                        .bench
+                        .output
+                        .take()
+                        .unwrap_or_else(|| "bench_results.csv".into());
+                    match self.bench.runner.write_csv(&path) {
+                        Ok(()) => println!("Benchmark results written to {}", path.display()),
+                        Err(e) => log::error!("Benchmark CSV write failed: {e}"),
+                    }
+                    return true;
+                }
+            }
+            AppHandler::handle_benchmark_action(&mut self.sim, &self.renderer, action);
+        }
+
+        if resp.start_quick {
+            self.bench.quick.start(self.sim.particle_count_gpu());
+        }
+        if self.bench.quick.is_running() {
+            self.bench
+                .quick
+                .advance(raw_dt, self.sim.particle_count_gpu());
+        }
+
+        if resp.start_capacity {
+            let sz = window.inner_size();
+            self.renderer.set_vsync(false);
+            let action = self.bench.capacity.start(sz.width, sz.height);
+            self.frame_times.clear();
+            AppHandler::handle_capacity_action(&mut self.sim, &self.renderer, action);
+        }
+        if resp.export_capacity_csv
+            && let Some(path) = rfd::FileDialog::new()
+                .add_filter("CSV", &["csv"])
+                .set_file_name("capacity.csv")
+                .save_file()
+            && let Err(e) = self.bench.capacity.write_csv(&path)
+        {
+            log::warn!("Capacity CSV export failed: {e}");
+        }
+        if self.bench.capacity.is_running() {
+            let action = self.bench.capacity.advance(raw_dt);
+            if matches!(action, benchmark::CapacityAction::Done) {
+                self.renderer.set_vsync(self.bench.vsync);
+                if self.bench.auto_kind == Some(AutoBenchKind::Capacity) {
+                    let path = self
+                        .bench
+                        .output
+                        .take()
+                        .unwrap_or_else(|| "capacity_results.csv".into());
+                    match self.bench.capacity.write_csv(&path) {
+                        Ok(()) => println!("Capacity results written to {}", path.display()),
+                        Err(e) => log::error!("Capacity benchmark CSV write failed: {e}"),
+                    }
+                    return true;
+                }
+            }
+            if matches!(action, benchmark::CapacityAction::LoadPreset { .. }) {
+                self.frame_times.clear();
+            }
+            AppHandler::handle_capacity_action(&mut self.sim, &self.renderer, action);
+        }
+
+        if resp.cancel {
+            self.bench.runner.cancel();
+            self.renderer.set_vsync(self.bench.vsync);
+        }
+        if resp.cancel_capacity {
+            self.bench.capacity.cancel();
+            self.renderer.set_vsync(self.bench.vsync);
+        }
+        false
+    }
+
+    /// Push the current cursor position and tool intent into the simulation's mouse state,
+    /// and run the Spawn tool if LMB is held.
+    fn handle_tool_effects(
+        &mut self,
+        viewport: winit::dpi::PhysicalSize<u32>,
+        world_aspect: f32,
+        shader_zoom: f32,
+        bench_running: bool,
+    ) {
+        let world = screen_to_world(
+            self.cursor_px,
+            viewport,
+            &self.camera,
+            world_aspect,
+            shader_zoom,
+        );
+        self.sim.mouse_x = world[0];
+        self.sim.mouse_y = world[1];
+        self.sim.mouse_range = self.tool.range;
+        let sim_lmb = self.lmb_down && !self.lmb_egui && !bench_running;
+        self.sim.mouse_strength = match self.tool.active {
+            ui::Tool::Attract if sim_lmb => self.tool.strength,
+            ui::Tool::Repel if sim_lmb => -self.tool.strength,
+            _ => 0.0,
+        };
+        if matches!(self.tool.active, ui::Tool::Spawn) && sim_lmb {
+            let queue = self.renderer.queue();
+            let spawn_species = self.tool.spawn_species;
+            let spawn_rate = self.tool.spawn_rate;
+            let before = self.sim.particle_count_gpu();
+            self.sim.spawn_particles(
+                queue,
+                world,
+                self.tool.range,
+                spawn_species,
+                world_aspect,
+                spawn_rate,
+            );
+            let spawned = (self.sim.particle_count_gpu() - before) as usize;
+            if spawned > 0 {
+                let n = self.sim.species_count;
+                match spawn_species {
+                    Some(s) if s < self.per_species_count.len() => {
+                        self.per_species_count[s] += spawned;
+                    }
+                    _ => {
+                        let per = spawned / n;
+                        let rem = spawned % n;
+                        for c in self.per_species_count.iter_mut() {
+                            *c += per;
+                        }
+                        for c in self.per_species_count.iter_mut().take(rem) {
+                            *c += 1;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1281,7 +1492,6 @@ impl AppHandler {
         sim: &mut SimulationState,
         renderer: &WgpuState,
         action: benchmark::BenchmarkAction,
-        _runner: &benchmark::BenchmarkRunner,
     ) {
         if let benchmark::BenchmarkAction::LoadCombo(combo) = action {
             // combo_preset() already pins world_width/height and disables auto_density for
@@ -1311,6 +1521,30 @@ impl AppHandler {
             sim.random_species_dist = false;
             sim.apply_preset(renderer.queue(), &preset);
             sim.random_species_dist = saved_dist;
+        }
+    }
+
+    /// Decode a share code and apply it to the simulation, then respawn.
+    ///
+    /// Returns `true` on success. Logs a warning and returns `false` on decode failure.
+    fn apply_matrix_code(sim: &mut SimulationState, renderer: &WgpuState, code: &str) -> bool {
+        match config::decode_matrix(code) {
+            Ok((n, matrix)) => {
+                sim.species_count = n;
+                sim.attraction = [0.0f32; 272];
+                for i in 0..n {
+                    for j in 0..n {
+                        sim.attraction[i * crate::simulation::MAX_SPECIES + j] = matrix[i * n + j];
+                    }
+                }
+                sim.mark_attraction_dirty();
+                sim.respawn(renderer.queue());
+                true
+            }
+            Err(e) => {
+                log::warn!("Share code apply failed: {e}");
+                false
+            }
         }
     }
 }

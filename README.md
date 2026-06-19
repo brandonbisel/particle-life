@@ -12,14 +12,17 @@ A GPU-accelerated [Particle Life](https://particle-life.com/) simulator written 
 - **500K particles** at 25–59 fps at fixed world size depending on particle distribution (Clusters/Chains ~58 fps; Ecosystem ~25 fps with LDS tile and rsqrt force pass; see [Benchmarks](BENCHMARKS.md)); comparable frame rates at 2M with auto-density
 - **16 species** with a fully editable N×N attraction matrix
 - **4 border modes:** Wrap (torus), Repel (spring wall), Static (hard wall), Matrix (per-species wall attraction)
-- **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn with adjustable range and strength
+- **Interactive tools:** Pan, Zoom, Attract, Repel, Spawn, and **Field** (permanent world-fixed attractors/repulsors with per-species strengths and optional drift) — all with adjustable range and strength
 - **Physical world size** — scales the simulation domain; auto-density mode keeps GPU load linear with particle count by growing the world as particles increase
 - **Configurable palette** — five built-in themes (Default, Vivid, Neon, Pastel, Dark), per-species color pickers, and randomize
-- **Preset system** — save, load, and import/export TOML presets; four built-in presets included; presets auto-scale to your window on load
+- **Preset system** — save, load, and import/export TOML presets; fourteen built-in presets included; presets auto-scale to your window on load
 - **Matrix share codes** — copy a compact base64 string representing the current attraction matrix and paste it into any other running instance to share emergent behaviors
 - **Real-time controls:** particle count, species, physics params, matrix randomization, pause/resume
 - **Performance overlay:** FPS, frame time min/max/avg, grid stats, density and neighbour estimate, VSync toggle
 - **Capacity benchmark** — binary-search mode finds the maximum sustainable particle count at a configurable target FPS; results exportable as CSV
+- **Slow motion** — simulation speed slider (5%–100% of real time) for observing emergent structure in detail
+- **Frame stepping** — step one physics tick at a time while paused (`→` key)
+- **Species visibility** — toggle individual species on/off in the palette panel
 - **Screenshot capture** — toolbar button saves a PNG to `screenshots/` with a timestamp filename
 
 ## Gallery
@@ -110,6 +113,8 @@ Options:
       --world-size <WxH>           Set world size, e.g. 1920x1080
       --particles <N>              Set particle count (clamped to 100–2 000 000)
       --matrix <CODE>              Apply attraction matrix share code on launch
+      --capture <FILE>             Save a screenshot to FILE then exit (combine with --preset)
+      --capture-delay <SECS>       Seconds to run before taking the --capture screenshot (default: 5)
   -h, --help                       Print help
 ```
 
@@ -132,7 +137,7 @@ All flags are optional and compose freely. When `--preset` and individual overri
 
 | Button | Effect |
 |--------|--------|
-| Pan / Zoom +/− / Attract / Repel / Spawn | Switch active tool |
+| Pan / Zoom +/− / Attract / Repel / Spawn / Field | Switch active tool |
 | Reset View | Fit world to window |
 | Camera icon | Save a PNG screenshot to `screenshots/` |
 
@@ -144,6 +149,7 @@ All flags are optional and compose freely. When `--preset` and individual overri
 | `+` / `=` | Zoom in |
 | `-` | Zoom out |
 | `Space` | Pause / resume simulation |
+| `→` *(when paused)* | Step one physics tick |
 | `0` | Reset view |
 | `R` | Respawn particles |
 | `S` | Save screenshot to `screenshots/` |
@@ -181,6 +187,7 @@ src/
 | `friction` | 0.5 | Velocity half-life ~1.4s |
 | `force_scale` | 0.007 | Global force multiplier |
 | `particle_radius` | 1.5 | Rendered size in world units |
+| `speed_limit` | 0.25 | Max particle travel per frame as a fraction of `r_max`; CFL guard against tunneling |
 | `world_width/height` | 1280 × 720 | Simulation world dimensions; affects interaction density |
 | Max particles | 2,000,000 | Hard GPU buffer limit (~90 MB VRAM) |
 | Max species | 16 | Attraction matrix dimension |
