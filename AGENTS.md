@@ -64,7 +64,7 @@ The renderer uses `wgpu::Backends::PRIMARY` — Vulkan on Linux/Windows, Metal o
 | `app.rs` | `AppHandler` / `AppState`; event routing, camera, per-frame orchestration |
 | `renderer.rs` | `WgpuState`; device/surface setup, particle render pipeline, egui renderer |
 | `simulation.rs` | `SimulationState`; GPU buffers, 6-pass compute dispatch, preset apply, spawn |
-| `config.rs` | `Preset` struct, four built-in presets, TOML I/O, session persistence |
+| `config.rs` | `Preset` struct, fourteen built-in presets, TOML I/O, session persistence |
 | `benchmark.rs` | `QuickBench` (ad-hoc), `BenchmarkRunner` (full suite + CSV export), `CapacityBench` (binary-search max-particle finder at target FPS) |
 | `ui.rs` | All egui draw functions; returns response structs — no app state owned here |
 
@@ -75,7 +75,7 @@ about_to_wait()
   └─ window.request_redraw()
 
 RedrawRequested
-  ├─ egui frame (draw_ui, draw_toolbar, draw_perf_overlay, draw_world_border, draw_cursor_indicator)
+  ├─ egui frame (draw_ui, draw_toolbar, draw_perf_overlay, draw_world_border, draw_cursor_indicator, draw_field_overlay)
   ├─ apply tool effects → sim.mouse_strength / spawn_particles()
   └─ renderer.render()
        ├─ sim.dispatch()   ← 6 GPU compute passes (physics)
@@ -126,7 +126,7 @@ The vertex buffer layout in `renderer.rs` and the WGSL struct in every shader mu
 dt, r_min, r_max, friction          (16B)
 n_particles, n_species, force_scale, aspect  (16B)
 mouse_x, mouse_y, mouse_strength, mouse_range  (16B)
-border_mode: u32, border_repel_strength: f32, _pad: [u32; 2]  (16B)
+border_mode: u32, border_repel_strength: f32, speed_limit: f32, n_attractors: u32  (16B)
 ```
 
 `aspect` is `world_width / world_height` (the simulation world's aspect ratio), **not** the viewport pixel ratio. The shader uses it to make inter-particle distances isotropic on screen and to equalize the border repel zone depth on all four walls.
@@ -193,7 +193,7 @@ ndc = (pos - camera_center) * (shader_zoom * 2.0)
 
 `config::Preset` is a TOML-serialisable snapshot of all simulation parameters. Key functions:
 
-- `builtin_presets()` — four compiled-in presets used by the benchmark suite and preset picker
+- `builtin_presets()` — fourteen compiled-in presets used by the benchmark suite and preset picker
 - `load_presets_dir()` — scans `presets/*.toml` on startup
 - `save_session` / `load_session` — auto-save to `session.toml` on exit, restore on startup
 - `SimulationState::apply_preset()` — copies all fields and calls `respawn()`
@@ -229,6 +229,10 @@ Mouse attractor state is written to `SimulationState` fields each frame in `app.
 
 The shader applies a quadratic falloff: `vel += direction * (strength * t² * dt)` where `t = 1 - dist/range`.
 
+### Permanent Field Attractors
+
+`sim.attractors: Vec<AttractorDef>` holds world-fixed force emitters. Each has `pos`, `range`, per-species `strength[MAX_SPECIES]`, and `velocity` (drift per second; `[0,0]` = static). `tick_attractors(dt)` advances drift and wraps/bounces positions each frame (called only when unpaused, before `dispatch()`). GPU layout is `GpuAttractor` (80 bytes: pos, range, pad, strength×16); max 64 attractors fit in a 5 KB pre-allocated buffer at binding 5 of the force pass. Attractors survive `respawn()`; only `clear_attractors()` removes them.
+
 ## Simulation Parameters
 
 | Field | Default | Range in UI | Notes |
@@ -239,10 +243,11 @@ The shader applies a quadratic falloff: `vel += direction * (strength * t² * dt
 | `force_scale` | 0.007 | 0.0001–0.05 | |
 | `particle_radius` | 1.5 | 0.5–12 | World units; normalised by `world_height` in renderer |
 | `border_repel_strength` | 5.0 | 0.1–30 | |
+| `speed_limit` | 0.25 | 0.01–2.0 | CFL guard; max travel per frame as fraction of `r_max_norm` |
 | `particle_count` | 5 000 | 100–2 000 000 | |
 | `world_width / world_height` | 1280 / 720 | 100–200 000 | Auto-computed if `auto_density` is on |
 
-CFL velocity cap in the shader: `max_speed = r_max_norm / dt * 0.25`. This prevents tunneling. Do not remove it.
+CFL velocity cap in the shader: `max_speed = r_max_norm / dt * speed_limit`. `speed_limit` (default 0.25) is a user-configurable `SimParams` field. This prevents tunneling. Do not remove it.
 
 ## Critical winit/wgpu Patterns
 
