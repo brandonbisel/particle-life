@@ -78,8 +78,8 @@ struct SimParams {
 
 /// A permanent force emitter placed in world space.  Stored CPU-side; uploaded to the GPU each frame.
 ///
-/// `pos` is in normalised [0,1]² world space.  `strength` is per-species: positive attracts,
-/// negative repels, zero ignores.  `velocity` drives drift (world-units per second); [0,0] = static.
+/// `pos` is in normalised \[0,1\]² world space.  `strength` is per-species: positive attracts,
+/// negative repels, zero ignores.  `velocity` drives drift (world-units per second); \[0,0\] = static.
 #[derive(Clone)]
 pub struct AttractorDef {
     pub pos: [f32; 2],
@@ -1146,7 +1146,7 @@ impl SimulationState {
 
     /// Advance attractor drift positions by `dt` seconds.
     ///
-    /// In wrap mode (border_mode 0) attractors torus-wrap at the [0,1]² boundary.
+    /// In wrap mode (border_mode 0) attractors torus-wrap at the \[0,1\]² boundary.
     /// In all other modes they bounce off the walls.
     /// Call this each frame before [`dispatch`](Self::dispatch).
     pub fn tick_attractors(&mut self, dt: f32) {
@@ -1155,8 +1155,8 @@ impl SimulationState {
             if attr.velocity == [0.0, 0.0] {
                 continue;
             }
-            let spd = (attr.velocity[0] * attr.velocity[0] + attr.velocity[1] * attr.velocity[1])
-                .sqrt();
+            let spd =
+                (attr.velocity[0] * attr.velocity[0] + attr.velocity[1] * attr.velocity[1]).sqrt();
             if spd > max_speed {
                 let scale = max_speed / spd;
                 attr.velocity[0] *= scale;

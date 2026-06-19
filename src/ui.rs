@@ -67,7 +67,7 @@ fn rgb(c: [u8; 3]) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// Apply a [`ThemeDef`] to the egui context.
+/// Apply a `ThemeDef` to the egui context.
 fn apply_theme_def(ctx: &egui::Context, def: &config::ThemeDef) {
     let mut v = if def.base == "light" {
         egui::Visuals::light()
@@ -1269,7 +1269,7 @@ fn draw_matrix_section(
 /// Draw the dedicated Appearance panel: palette colours, UI theme, overlay opacity, background.
 ///
 /// `open` is toggled by the toolbar Appearance button; the window has no built-in close button.
-/// `themes` is the merged list of bundled + user-loaded [`ThemeDef`]s.
+/// `themes` is the merged list of bundled + user-loaded `ThemeDef`s.
 pub fn draw_appearance_overlay(
     ctx: &egui::Context,
     sim: &mut SimulationState,
@@ -1793,7 +1793,10 @@ pub fn draw_field_overlay(
         painter.circle_stroke(
             center,
             r_px,
-            egui::Stroke::new(stroke_w, egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)),
+            egui::Stroke::new(
+                stroke_w,
+                egui::Color32::from_rgba_unmultiplied(r, g, b, alpha),
+            ),
         );
         painter.circle_filled(
             center,
