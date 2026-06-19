@@ -1,0 +1,12 @@
+# Colors from the Nord palette by Arctic Ice Studio — nordtheme.com (MIT)
+name = "Nord"
+base = "dark"
+panel_fill     = [46,  52,  64]
+window_fill    = [59,  66,  82]
+window_stroke  = [76,  86, 106]
+inactive_bg    = [59,  66,  82]
+hovered_bg     = [67,  76,  94]
+active_bg      = [76,  86, 106]
+button_bg      = [136, 192, 208]
+selection_bg   = [94, 129, 172]
+text           = [236, 239, 244]
