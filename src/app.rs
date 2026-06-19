@@ -18,7 +18,10 @@ use winit::{
 };
 
 use crate::{
-    benchmark, cli, config, icon, renderer, renderer::WgpuState, simulation::SimulationState, ui,
+    benchmark, cli, config, icon, renderer,
+    renderer::WgpuState,
+    simulation::{AttractorDef, MAX_SPECIES, SimulationState},
+    ui,
 };
 
 // ── Camera ────────────────────────────────────────────────────────────────────
@@ -136,6 +139,9 @@ struct ToolState {
     strength: f32,
     spawn_species: Option<usize>,
     spawn_rate: u32,
+    field_drag_start: Option<[f32; 2]>,
+    field_default_strength: f32,
+    field_species_strength: [f32; MAX_SPECIES],
 }
 
 impl Default for ToolState {
@@ -146,6 +152,9 @@ impl Default for ToolState {
             strength: 2.0,
             spawn_species: None,
             spawn_rate: 50,
+            field_drag_start: None,
+            field_default_strength: 2.0,
+            field_species_strength: [2.0; MAX_SPECIES],
         }
     }
 }
@@ -574,6 +583,17 @@ impl ApplicationHandler for AppHandler {
                                         1.0 / 1.5,
                                     );
                                 }
+                                ui::Tool::Field => {
+                                    let zoom = state.camera.zoom_factor * state.fit_zoom;
+                                    let wa = state.sim.world_aspect();
+                                    state.tool.field_drag_start = Some(screen_to_world(
+                                        state.cursor_px,
+                                        window.inner_size(),
+                                        &state.camera,
+                                        wa,
+                                        zoom,
+                                    ));
+                                }
                                 _ => {} // attract / repel / spawn handled each frame in RedrawRequested
                             }
                         }
@@ -582,6 +602,41 @@ impl ApplicationHandler for AppHandler {
                         state.lmb_down = false;
                         state.lmb_egui = false;
                         state.pan.lmb_panning = false;
+                        // Field tool: commit placement or removal on release.
+                        if matches!(state.tool.active, ui::Tool::Field)
+                            && let Some(start) = state.tool.field_drag_start.take()
+                        {
+                            let zoom = state.camera.zoom_factor * state.fit_zoom;
+                            let wa = state.sim.world_aspect();
+                            let cur = screen_to_world(
+                                state.cursor_px,
+                                window.inner_size(),
+                                &state.camera,
+                                wa,
+                                zoom,
+                            );
+                            let dx = cur[0] - start[0];
+                            let dy = cur[1] - start[1];
+                            let drag_mag = (dx * dx + dy * dy).sqrt();
+                            let threshold = state.tool.range.max(0.04);
+                            if !state.sim.remove_nearest_attractor(start, threshold) {
+                                let velocity = if drag_mag >= 0.005 {
+                                    [dx * 0.5, dy * 0.5]
+                                } else {
+                                    [0.0f32, 0.0]
+                                };
+                                let mut strength = [0.0f32; MAX_SPECIES];
+                                let n = state.sim.species_count;
+                                strength[..n]
+                                    .copy_from_slice(&state.tool.field_species_strength[..n]);
+                                state.sim.add_attractor(AttractorDef {
+                                    pos: start,
+                                    range: state.tool.range,
+                                    strength,
+                                    velocity,
+                                });
+                            }
+                        }
                         // If MMB is still panning, re-anchor so the transition is smooth.
                         if state.pan.mmb_panning {
                             state.pan.start_px = state.cursor_px;
@@ -746,6 +801,9 @@ impl ApplicationHandler for AppHandler {
                     let mouse_strength = &mut state.tool.strength;
                     let spawn_species = &mut state.tool.spawn_species;
                     let spawn_rate = &mut state.tool.spawn_rate;
+                    let field_drag_start = state.tool.field_drag_start;
+                    let field_default_strength = &mut state.tool.field_default_strength;
+                    let field_species_strength = state.tool.field_species_strength.as_mut_slice();
                     let n_species = sim.species_count;
                     let border_mode = sim.border_mode;
                     let preset_library = &state.gallery.presets;
@@ -841,6 +899,10 @@ impl ApplicationHandler for AppHandler {
                             spawn_rate,
                             n_species,
                             &sim.palette,
+                            field_default_strength,
+                            field_species_strength,
+                            sim.attractors.len(),
+                            &mut ui_r.clear_attractors,
                         );
                         ui::draw_world_border(
                             ctx,
@@ -850,6 +912,31 @@ impl ApplicationHandler for AppHandler {
                             border_mode,
                         );
                         ui::draw_cursor_indicator(ctx, *tool, *tool_range, shader_zoom);
+                        let [br, bg, bb] = appearance.bg_color;
+                        let bg_lum =
+                            (0.299 * br as f32 + 0.587 * bg as f32 + 0.114 * bb as f32) / 255.0;
+                        ui::draw_field_overlay(
+                            ctx,
+                            &sim.attractors,
+                            cam_center,
+                            world_aspect,
+                            shader_zoom,
+                            *tool,
+                            ctx.input(|i| i.pointer.hover_pos()).map(|p| {
+                                let r = ctx.screen_rect();
+                                [
+                                    (p.x - r.center().x)
+                                        / (world_aspect * shader_zoom * r.height())
+                                        + cam_center[0],
+                                    cam_center[1]
+                                        - (p.y - r.center().y) / (shader_zoom * r.height()),
+                                ]
+                            }),
+                            n_species,
+                            field_drag_start,
+                            *tool_range,
+                            bg_lum,
+                        );
                     });
                     (out, ui_r, bench_r, reset_view, take_screenshot)
                 };
@@ -912,6 +999,9 @@ impl ApplicationHandler for AppHandler {
                 }
 
                 let physics_dt = dt * state.time_scale;
+                if !state.sim.paused {
+                    state.sim.tick_attractors(physics_dt);
+                }
                 match state.renderer.render(
                     &paint_jobs,
                     &textures_delta,
@@ -979,7 +1069,9 @@ fn tool_cursor(tool: ui::Tool, panning: bool) -> CursorIcon {
         }
         ui::Tool::ZoomIn => CursorIcon::ZoomIn,
         ui::Tool::ZoomOut => CursorIcon::ZoomOut,
-        ui::Tool::Attract | ui::Tool::Repel | ui::Tool::Spawn => CursorIcon::Crosshair,
+        ui::Tool::Attract | ui::Tool::Repel | ui::Tool::Spawn | ui::Tool::Field => {
+            CursorIcon::Crosshair
+        }
     }
 }
 
@@ -1047,6 +1139,9 @@ impl AppState {
         should_reset_view: bool,
         take_screenshot_from_toolbar: bool,
     ) {
+        if resp.clear_attractors {
+            self.sim.clear_attractors();
+        }
         if resp.toggle_gallery {
             self.gallery.open = !self.gallery.open;
         }
@@ -1230,6 +1325,9 @@ impl AppState {
             }
         }
 
+        if resp.start || resp.start_quick || resp.start_capacity {
+            self.sim.clear_attractors();
+        }
         if resp.start {
             let sz = window.inner_size();
             if self.bench.runner.vsync_off {

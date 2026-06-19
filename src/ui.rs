@@ -6,7 +6,7 @@
 use std::collections::VecDeque;
 use std::io::Cursor;
 
-use crate::simulation::{MAX_SPECIES, PALETTE_DEFAULT, SimulationState};
+use crate::simulation::{AttractorDef, MAX_SPECIES, PALETTE_DEFAULT, SimulationState};
 use crate::{benchmark, config};
 
 use egui_phosphor::regular as ph;
@@ -117,6 +117,8 @@ pub struct UiResponse {
     pub appearance_changed: bool,
     /// The pop-out / dock button in the Attraction Matrix was clicked.
     pub matrix_pop_out_toggled: bool,
+    /// "Clear all fields" button clicked in the Field tool panel.
+    pub clear_attractors: bool,
 }
 
 /// Actions requested by the Performance / benchmark panel.
@@ -149,6 +151,8 @@ pub enum Tool {
     Attract,
     Repel,
     Spawn,
+    /// Place or remove permanent force emitters (field attractors/repulsors).
+    Field,
 }
 
 /// Draw the bottom-center horizontal toolbar: icon tool buttons, Reset View, Screenshot, Gallery,
@@ -252,6 +256,20 @@ pub fn draw_toolbar(
                             if r.clicked() {
                                 *tool = Tool::Spawn;
                             }
+
+                            let r = ui
+                                .add_sized(
+                                    icon_sz,
+                                    egui::SelectableLabel::new(*tool == Tool::Field, ph::BROADCAST),
+                                )
+                                .on_hover_text(
+                                    "Field — click to place a permanent attractor/repulsor; \
+                                     drag to give it drift velocity; \
+                                     click an existing field to remove it",
+                                );
+                            if r.clicked() {
+                                *tool = Tool::Field;
+                            }
                         });
 
                         ui.separator();
@@ -335,6 +353,8 @@ pub fn draw_toolbar(
 /// The panel appears flush to the left of the toolbar (using `toolbar_rect`
 /// from the current frame's [`draw_toolbar`] call) and disappears entirely
 /// when Pan, ZoomIn, or ZoomOut is selected.
+///
+/// Returns `true` when the "Clear all fields" button in the Field panel is clicked.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_tool_options(
     ctx: &egui::Context,
@@ -346,8 +366,16 @@ pub fn draw_tool_options(
     spawn_rate: &mut u32,
     n_species: usize,
     palette: &[u32],
+    // Field tool parameters:
+    field_default_strength: &mut f32,
+    field_species_strength: &mut [f32],
+    n_attractors: usize,
+    clear_attractors: &mut bool,
 ) {
-    if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
+    if !matches!(
+        tool,
+        Tool::Attract | Tool::Repel | Tool::Spawn | Tool::Field
+    ) {
         return;
     }
 
@@ -414,6 +442,64 @@ pub fn draw_tool_options(
                             if resp.clicked() {
                                 *spawn_species = Some(i);
                             }
+                        }
+                    });
+                }
+                Tool::Field => {
+                    ui.add(
+                        egui::Slider::new(tool_range, 0.02..=0.4)
+                            .text("Range")
+                            .step_by(0.01),
+                    )
+                    .on_hover_text("Influence radius of newly placed fields");
+
+                    let prev = *field_default_strength;
+                    ui.add(
+                        egui::Slider::new(field_default_strength, -10.0..=10.0)
+                            .text("Strength")
+                            .step_by(0.1),
+                    )
+                    .on_hover_text(
+                        "Signed force strength for new fields: positive = attract, negative = repel. \
+                         Changing this syncs all species to the new value.",
+                    );
+                    if (*field_default_strength - prev).abs() > 1e-6 {
+                        for v in field_species_strength.iter_mut().take(n_species) {
+                            *v = *field_default_strength;
+                        }
+                    }
+
+                    ui.separator();
+                    ui.label("Per-species strength:");
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, s) in field_species_strength[..n_species].iter_mut().enumerate() {
+                            let color = species_color(i, palette);
+                            ui.vertical(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::Vec2::new(18.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
+                                ui.painter().rect_filled(rect, 2.0, color);
+                                ui.add(
+                                    egui::DragValue::new(s)
+                                        .range(-10.0..=10.0)
+                                        .speed(0.05)
+                                        .min_decimals(1)
+                                        .max_decimals(1),
+                                );
+                            });
+                        }
+                    });
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{n_attractors} field(s) placed"));
+                        if ui
+                            .add_enabled(n_attractors > 0, egui::Button::new("Clear all"))
+                            .on_hover_text("Remove all permanent field attractors and repulsors")
+                            .clicked()
+                        {
+                            *clear_attractors = true;
                         }
                     });
                 }
@@ -1555,12 +1641,44 @@ pub fn draw_world_border(
     );
 }
 
+/// Triangle-fan mesh from `color` at `center` to fully transparent at `radius`.
+/// Single GPU draw call; avoids the per-pixel accumulation artifacts that arise
+/// from stacking many concentric semi-transparent circles.
+fn radial_gradient_fill(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    radius: f32,
+    color: egui::Color32,
+) {
+    if radius < 1.0 {
+        return;
+    }
+    const SEGMENTS: u32 = 64;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(center, color);
+    for i in 0..=SEGMENTS {
+        let angle = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+        let pos = egui::pos2(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+        );
+        mesh.colored_vertex(pos, egui::Color32::TRANSPARENT);
+    }
+    for i in 0..SEGMENTS {
+        mesh.indices.extend_from_slice(&[0, 1 + i, 2 + i]);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 /// Draw a brush-size circle around the cursor for range-based tools.
 ///
 /// Attract/Repel also render a radial gradient fill approximating the quadratic
 /// force falloff.  No-ops for Pan, ZoomIn, and ZoomOut.
 pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, shader_zoom: f32) {
-    if !matches!(tool, Tool::Attract | Tool::Repel | Tool::Spawn) {
+    if !matches!(
+        tool,
+        Tool::Attract | Tool::Repel | Tool::Spawn | Tool::Field
+    ) {
         return;
     }
     if ctx.is_pointer_over_area() {
@@ -1576,6 +1694,7 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, s
         Tool::Attract => (100u8, 200u8, 255u8),
         Tool::Repel => (255u8, 100u8, 100u8),
         Tool::Spawn => (100u8, 255u8, 130u8),
+        Tool::Field => (255u8, 200u8, 80u8), // amber — neutral placement preview
         _ => unreachable!(),
     };
 
@@ -1584,22 +1703,138 @@ pub fn draw_cursor_indicator(ctx: &egui::Context, tool: Tool, tool_range: f32, s
         egui::Id::new("cursor_indicator"),
     ));
 
-    // Radial gradient fill for Attract/Repel — approximates the quadratic falloff
-    // by stacking concentric filled circles from the outside inward. Each circle
-    // adds a small alpha; the center accumulates all layers, the edge only the outermost.
     if matches!(tool, Tool::Attract | Tool::Repel) {
-        const RINGS: usize = 24;
-        for ring in 0..RINGS {
-            let frac = ring as f32 / RINGS as f32; // 0 = outermost, ~1 = innermost
-            let r_px = screen_radius * (1.0 - frac);
-            let fill = egui::Color32::from_rgba_unmultiplied(r, g, b, 5);
-            painter.circle_filled(cursor, r_px, fill);
-        }
+        radial_gradient_fill(
+            &painter,
+            cursor,
+            screen_radius,
+            egui::Color32::from_rgba_unmultiplied(r, g, b, 95),
+        );
     }
 
     // Outer ring (border of the influence zone)
     let border = egui::Color32::from_rgba_unmultiplied(r, g, b, 180);
     painter.circle_stroke(cursor, screen_radius, egui::Stroke::new(1.5, border));
+}
+
+/// Draw world-space overlay for permanent field attractors/repulsors.
+///
+/// Each attractor is drawn as a coloured ring (amber = net attract, blue = net repel,
+/// grey = neutral/mixed), a filled centre dot, and a velocity arrow when drifting.
+/// When the Field tool is active and `cursor_world` is within the attractor's range,
+/// the ring highlights red as a removal hint.
+///
+/// If `field_drag_start` is `Some`, a ghost preview circle and optional drift arrow
+/// are drawn to preview the placement before the mouse button is released.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_field_overlay(
+    ctx: &egui::Context,
+    attractors: &[AttractorDef],
+    camera_center: [f32; 2],
+    world_aspect: f32,
+    shader_zoom: f32,
+    tool: Tool,
+    cursor_world: Option<[f32; 2]>,
+    n_species: usize,
+    field_drag_start: Option<[f32; 2]>,
+    tool_range: f32,
+    bg_luminance: f32,
+) {
+    if attractors.is_empty() && field_drag_start.is_none() {
+        return;
+    }
+
+    // Scale transparency to background brightness: dark bg → more transparent,
+    // light bg → keep alphas as authored. Range 0.5 (black) → 1.0 (white).
+    let alpha_scale = 0.5 + 0.5 * bg_luminance.clamp(0.0, 1.0);
+    let sc = |a: u8| -> u8 { (a as f32 * alpha_scale) as u8 };
+
+    let rect = ctx.screen_rect();
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        egui::Order::Background,
+        egui::Id::new("field_overlay"),
+    ));
+
+    let to_screen = |world: [f32; 2]| -> egui::Pos2 {
+        world_to_screen(world, camera_center, world_aspect, shader_zoom, rect)
+    };
+    let px_radius = |r: f32| -> f32 { r * shader_zoom * rect.height() };
+    let field_active = matches!(tool, Tool::Field);
+
+    for attr in attractors {
+        let center = to_screen(attr.pos);
+        let r_px = px_radius(attr.range);
+
+        let net: f32 = attr.strength[..n_species].iter().sum();
+        let is_removal_candidate = field_active
+            && cursor_world.is_some_and(|cw| {
+                let dx = (cw[0] - attr.pos[0]) * world_aspect;
+                let dy = cw[1] - attr.pos[1];
+                (dx * dx + dy * dy).sqrt() < attr.range.max(0.04)
+            });
+
+        let (r, g, b, alpha) = if is_removal_candidate {
+            (255u8, 200u8, 80u8, sc(160)) // amber — removal hint
+        } else if net > 0.5 {
+            (100u8, 200u8, 255u8, sc(80)) // blue — net attract
+        } else if net < -0.5 {
+            (255u8, 100u8, 100u8, sc(80)) // red — net repel
+        } else {
+            (200u8, 200u8, 200u8, sc(55)) // grey — neutral/mixed
+        };
+        // Radial gradient fill — same style as the attract/repel cursor, but fainter.
+        radial_gradient_fill(
+            &painter,
+            center,
+            r_px,
+            egui::Color32::from_rgba_unmultiplied(r, g, b, sc(55)),
+        );
+        let stroke_w = if is_removal_candidate { 2.5 } else { 2.0 };
+        painter.circle_stroke(
+            center,
+            r_px,
+            egui::Stroke::new(stroke_w, egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)),
+        );
+        painter.circle_filled(
+            center,
+            3.0,
+            egui::Color32::from_rgba_unmultiplied(r, g, b, sc(140)),
+        );
+    }
+
+    // Ghost preview while a placement drag is in progress.
+    if let Some(start) = field_drag_start {
+        let start_px = to_screen(start);
+        let r_px = px_radius(tool_range);
+        painter.circle_filled(
+            start_px,
+            r_px,
+            egui::Color32::from_rgba_unmultiplied(255, 200, 80, sc(40)),
+        );
+        painter.circle_stroke(
+            start_px,
+            r_px,
+            egui::Stroke::new(
+                1.5,
+                egui::Color32::from_rgba_unmultiplied(255, 200, 80, sc(100)),
+            ),
+        );
+        if let Some(cw) = cursor_world {
+            let dx = cw[0] - start[0];
+            let dy = cw[1] - start[1];
+            if dx * dx + dy * dy > 0.005 * 0.005 {
+                let tip = to_screen(cw);
+                painter.arrow(
+                    start_px,
+                    tip - start_px,
+                    egui::Stroke::new(
+                        1.5,
+                        egui::Color32::from_rgba_unmultiplied(255, 200, 80, sc(120)),
+                    ),
+                );
+            }
+        }
+    }
 }
 
 /// Draw the top-right Performance panel with live FPS stats, Quick Bench, and the Suite Benchmark.

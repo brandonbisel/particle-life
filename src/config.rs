@@ -170,6 +170,10 @@ fn default_auto_particle_size() -> bool {
     true
 }
 
+fn is_zero(v: &f32) -> bool {
+    *v == 0.0
+}
+
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
@@ -263,6 +267,28 @@ pub struct Preset {
     /// Per-species packed sRGB colours (`0xFF_BB_GG_RR`). Optional; absent means use default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub palette: Option<Vec<u32>>,
+    /// Permanent force emitters placed in world space.  Absent (or empty) means no fixed fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attractors: Vec<AttractorConfig>,
+}
+
+/// A serialisable description of one permanent field attractor/repulsor.
+///
+/// Stored in [`Preset`] so attractor layouts can be saved with presets and
+/// restored across sessions.  `strength` has one entry per species (values in
+/// `[-1, 1]` or beyond); shorter slices are zero-padded on load.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct AttractorConfig {
+    pub x: f32,
+    pub y: f32,
+    pub range: f32,
+    /// Per-species signed strength.  Length should equal `species_count` at save time;
+    /// shorter slices are zero-padded when loading, longer slices are truncated.
+    pub strength: Vec<f32>,
+    #[serde(default, skip_serializing_if = "crate::config::is_zero")]
+    pub vel_x: f32,
+    #[serde(default, skip_serializing_if = "crate::config::is_zero")]
+    pub vel_y: f32,
 }
 
 impl Preset {
@@ -289,6 +315,7 @@ impl Preset {
             attraction,
             wall_attraction: None,
             palette: None,
+            attractors: Vec::new(),
         }
     }
 }
