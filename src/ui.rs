@@ -115,6 +115,9 @@ pub struct UiResponse {
     /// Theme or background colour changed; caller should apply the new visuals and
     /// persist `appearance`.
     pub appearance_changed: bool,
+    /// Fullscreen checkbox was toggled; caller should call `window.set_fullscreen` to match
+    /// `appearance.fullscreen`.
+    pub fullscreen_toggled: bool,
     /// The pop-out / dock button in the Attraction Matrix was clicked.
     pub matrix_pop_out_toggled: bool,
     /// "Clear all fields" button clicked in the Field tool panel.
@@ -1369,6 +1372,16 @@ pub fn draw_appearance_overlay(
                     themes,
                 );
                 resp.appearance_changed = true;
+            }
+
+            // ── Fullscreen ────────────────────────────────────────────────────
+            if ui
+                .checkbox(&mut appearance.fullscreen, "Fullscreen")
+                .on_hover_text("Start in borderless fullscreen mode (also toggled by F11)")
+                .changed()
+            {
+                resp.appearance_changed = true;
+                resp.fullscreen_toggled = true;
             }
 
             ui.separator();

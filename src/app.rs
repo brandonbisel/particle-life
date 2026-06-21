@@ -364,6 +364,9 @@ impl ApplicationHandler for AppHandler {
         let preset_thumbnails = ui::load_preset_thumbnails(&preset_library, &egui_ctx);
 
         let appearance = config::load_appearance();
+        if appearance.fullscreen && window.fullscreen().is_none() {
+            window.set_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
         let mut themes = config::bundled_themes();
         // User themes in ./themes/ override bundled themes of the same name.
         for user in config::load_themes_dir() {
@@ -693,11 +696,14 @@ impl ApplicationHandler for AppHandler {
                 if !resp.consumed {
                     // F11 toggles borderless fullscreen regardless of other key state
                     if logical_key == Key::Named(NamedKey::F11) {
-                        window.set_fullscreen(if window.fullscreen().is_some() {
-                            None
-                        } else {
+                        let entering = window.fullscreen().is_none();
+                        window.set_fullscreen(if entering {
                             Some(Fullscreen::Borderless(None))
+                        } else {
+                            None
                         });
+                        state.appearance.fullscreen = entering;
+                        config::save_appearance(&state.appearance);
                     }
 
                     let step = 0.1 / (state.camera.zoom_factor * state.fit_zoom);
@@ -1296,6 +1302,13 @@ impl AppState {
             self.per_species_count = self.sim.species_counts();
             self.renderer
                 .update_palette(&self.sim.palette, &self.sim.species_visible);
+        }
+        if resp.fullscreen_toggled {
+            window.set_fullscreen(if self.appearance.fullscreen {
+                Some(Fullscreen::Borderless(None))
+            } else {
+                None
+            });
         }
         if resp.appearance_changed {
             ui::apply_theme(

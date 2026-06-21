@@ -156,6 +156,9 @@ pub struct AppearanceConfig {
     /// Overlay panel opacity: 0 = fully transparent, 255 = fully opaque.
     #[serde(default = "default_overlay_alpha")]
     pub overlay_alpha: u8,
+    /// Start (and stay) in borderless-fullscreen mode.
+    #[serde(default)]
+    pub fullscreen: bool,
 }
 
 fn default_bg() -> [u8; 3] {
@@ -180,6 +183,7 @@ impl Default for AppearanceConfig {
             ui_theme: UiTheme::default(),
             bg_color: default_bg(),
             overlay_alpha: default_overlay_alpha(),
+            fullscreen: false,
         }
     }
 }
